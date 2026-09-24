@@ -41,7 +41,10 @@ constexpr int PH_END_MISSES = 1;                 // lines without pulse: phasing
 constexpr int PH_EDGE_EXCUSE = 2;                // lines at the edge not counted as misses
 constexpr int PH_SEG_MIN = 3;                    // points for a segment's own intercept
 constexpr float PH_OUTLIER = 6.0f, PH_RMS = 3.0f;    // px
-constexpr float SLANT_MAX = 0.05f;               // line length within 5% of nominal
+// The measured sample rate already corrects the board clock and stations send
+// at an exact rate: what is left is tiny. A larger fitted drift is a wrong fit
+// (real phasing differing from the model, image content), and is rejected.
+constexpr float SLANT_MAX = 0.003f;              // line length within 0.3% of the measured rate
 constexpr int PHASE_MAX_LINES = 80;              // give up (and skip) after this
 constexpr float PHASE_FLAT = 0.15f;              // std. deviation outside the pulse
 

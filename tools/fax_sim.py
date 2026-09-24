@@ -15,7 +15,7 @@ MID = 1900.0
 TONE_WIN, TONE_RUNS, STOP_HZ, TONE_SHARE = FS // 4, 6, 450.0, 0.1
 PULSE, PULSE_CONTRAST = W // 20, 0.3
 PHASE_TOL, PHASE_MAX_LINES, PHASE_FLAT = W // 100, 80, 0.15
-PH_MIN, PH_MAX, PH_END_MISSES, PH_OUTLIER, PH_RMS, SLANT_MAX = 12, 64, 1, 6.0, 3.0, 0.05
+PH_MIN, PH_MAX, PH_END_MISSES, PH_OUTLIER, PH_RMS, SLANT_MAX = 12, 64, 1, 6.0, 3.0, 0.003
 PH_EDGE_EXCUSE, PH_SEG_MIN = 2, 3
 MAX_LINES = 3000
 
@@ -316,13 +316,12 @@ def selftest():
         ('120 lpm, mistuned +40 Hz', {'mistune': 40.0}, 0.08),
         ('60 lpm', {'lpm': 60, 'lines': 60}, 0.05),
         ('IOC 288', {'ioc': 288}, 0.05),
-        ('relogio +0,4 %', {'clock': 1.004}, 0.06),
-        ('relogio -0,4 %', {'clock': 0.996}, 0.06),
+        # Clock left after the measured sample rate (the fit accepts up to 0.3%).
+        ('relogio +0,25 %', {'clock': 1.0025}, 0.05),
+        ('relogio -0,25 %', {'clock': 0.9975}, 0.05),
         ('relogio +0,15 %, 10 dB', {'clock': 1.0015, 'snr_db': 10.0}, 0.10),
-        ('relogio +1 %, pulso no bordo', {'clock': 1.01, 'offset': 0.1}, 0.05),
-        ('relogio -1 %, pulso no bordo', {'clock': 0.99, 'offset': 0.1}, 0.05),
-        ('relogio +3 %', {'clock': 1.03}, 0.05),
-        ('relogio -3 %', {'clock': 0.97}, 0.05),
+        ('relogio +0,2 %, pulso no bordo', {'clock': 1.002, 'offset': 0.1}, 0.05),
+        ('relogio -0,2 %, pulso no bordo', {'clock': 0.998, 'offset': 0.1}, 0.05),
     ]:
         fax, err, n = run_case(name, **kw)
         lines = kw.get('lines', 120)

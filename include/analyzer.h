@@ -8,5 +8,8 @@
 
 void analyzer_init();
 
+// Measured DSP sample rate (Hz), 0 until the first 10 s interval.
+float analyzer_sample_rate();
+
 // raw_peak: peak absolute sample (full scale = AUDIO_FULL_SCALE) seen by the capture task since the last block.
 void analyzer_process_block(const float *x, int32_t raw_peak, uint32_t overruns);

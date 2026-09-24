@@ -26,6 +26,7 @@
 #include "fax_decoder.h"
 #include "sstv_decoder.h"
 #include "ftx_decoder.h"
+#include "analyzer.h"
 #include "esp_netif_sntp.h"
 #include <sys/time.h>
 #include <time.h>
@@ -539,6 +540,9 @@ static int format_json(bool with_rows, char *json, size_t cap)
     n += snprintf(json + n, cap - n, ",\"sstv_rx\":%s,\"sstv_lines\":%d,\"sstv_mode\":",
                   sstv_receiving() ? "true" : "false", sstv_lines());
     n += json_str(json + n, cap - n, sstv_mode_name());
+    const float fs = analyzer_sample_rate();
+    n += snprintf(json + n, cap - n, ",\"fs_ppm\":%.0f,\"fs_ok\":%s",
+                  fs > 0.0f ? (fs / DSP_SAMPLE_RATE - 1.0f) * 1e6f : 0.0f, fs > 0.0f ? "true" : "false");
     n += snprintf(json + n, cap - n, ",\"gal\":%" PRIu32 ",\"sstv_adjust\":%s", gal_seq,
                   g_settings.sstv_adjust ? "true" : "false");
     n += snprintf(json + n, cap - n,

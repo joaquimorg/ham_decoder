@@ -451,6 +451,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
                    img: d.fax_state > 0 || d.sstv_rx };
     for (const b of document.querySelectorAll('#tabs button')) b.classList.toggle('live', !!live[b.dataset.tab]);
     faxState = d.fax_state;
+    clock = d.fs_ok ? `relógio da placa ${d.fs_ppm > 0 ? '+' : ''}${d.fs_ppm} ppm` : 'relógio da placa: a medir';
     sstv = d.sstv_rx ? `a receber ${d.sstv_mode}` : 'à espera do cabeçalho VIS';
     showImgInfo();
 
@@ -596,12 +597,12 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   // gives the lines their real height).
   const imgCv = $('img'), imgCtx = imgCv.getContext('2d');
   const img = { id: 0, next: 0, base: 0, w: 0, ch: 1, aspect: 1, total: 0, active: false, title: '' };
-  let faxState = 0, sstv = '', activeTab = 'cw';
+  let faxState = 0, sstv = '', activeTab = 'cw', clock = '';
 
   function showImgInfo() {
     const fax = ['à espera do tom de início', 'a alinhar (linhas de fase)', 'a receber'][faxState] || '';
     const cur = img.id ? `${img.title} · ${img.total} linhas${img.active ? '' : ' · terminada'}` : 'Sem imagem';
-    $('imgInfo').textContent = `${cur} · FAX: ${fax} · SSTV: ${sstv}`;
+    $('imgInfo').textContent = `${cur} · FAX: ${fax} · SSTV: ${sstv} · ${clock}`;
     const isFax = img.title.startsWith('FAX');
     $('faxHint').hidden = !isFax;
     imgCv.style.cursor = isFax ? 'crosshair' : '';

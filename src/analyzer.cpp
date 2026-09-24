@@ -59,30 +59,46 @@ uint32_t last_overruns = 0;
 uint32_t report_no = 0;
 
 // Real DSP sample rate, measured against esp_timer (crystal): the ADC's
-// continuous mode is a few 0.1% off its nominal rate, which slants FAX images.
+// continuous mode is a few 0.1% off its nominal rate (+1728 ppm on one board),
+// which slants FAX images. Measured over 10 s intervals; an interval with lost
+// blocks or stalled audio (overruns, the capture dump, a burst of queued
+// blocks after a stall) is off by more than RATE_TOL or has overruns, and is
+// left out - one such stall used to spoil a measurement taken since boot.
 int64_t rate_t0 = 0;
-uint64_t rate_samples = 0;
+uint64_t rate_n = 0;
+uint32_t rate_ovr0 = 0;
+double acc_samples = 0.0, acc_us = 0.0;    // accepted intervals
+int rate_intervals = 0;
 float measured_rate = 0.0f;
-constexpr int64_t RATE_MIN_US = 20000000;    // measure at least 20 s
+constexpr int64_t RATE_WIN_US = 10000000;
+constexpr double RATE_TOL = 0.01;
 
-void measure_rate()
+void measure_rate(uint32_t overruns)
 {
     const int64_t now = esp_timer_get_time();
     if (!rate_t0) {
         rate_t0 = now;    // count from the end of this block on
+        rate_ovr0 = overruns;
         return;
     }
-    rate_samples += N;
+    rate_n += N;
     const int64_t us = now - rate_t0;
-    if (us < RATE_MIN_US)
+    if (us < RATE_WIN_US)
         return;
-    const bool first = measured_rate == 0.0f;
-    measured_rate = (float)(rate_samples * 1e6 / us);
-    fax_set_sample_rate(measured_rate);
-    sstv_set_sample_rate(measured_rate);
-    if (first || report_no % 600 == 0)
-        ESP_LOGW(TAG, "taxa de amostragem medida: %.2f Hz (%+.0f ppm)", measured_rate,
-                 (measured_rate / DSP_SAMPLE_RATE - 1.0f) * 1e6f);
+    const double r = rate_n * 1e6 / us;
+    if (overruns == rate_ovr0 && fabs(r / DSP_SAMPLE_RATE - 1.0) < RATE_TOL) {
+        acc_samples += rate_n;
+        acc_us += us;
+        measured_rate = (float)(acc_samples * 1e6 / acc_us);
+        fax_set_sample_rate(measured_rate);
+        sstv_set_sample_rate(measured_rate);
+        if (rate_intervals++ % 60 == 0)
+            ESP_LOGW(TAG, "taxa de amostragem medida: %.2f Hz (%+.0f ppm, %d intervalos)", measured_rate,
+                     (measured_rate / DSP_SAMPLE_RATE - 1.0f) * 1e6f, rate_intervals);
+    }
+    rate_t0 = now;
+    rate_n = 0;
+    rate_ovr0 = overruns;
 }
 
 double level_acc = 0;
@@ -497,6 +513,11 @@ void reset()
 
 } // namespace
 
+float analyzer_sample_rate()
+{
+    return measured_rate;
+}
+
 void analyzer_init()
 {
     for (int i = 0; i < N; i++)
@@ -517,7 +538,7 @@ void analyzer_init()
 
 void analyzer_process_block(const float *x, int32_t raw_peak, uint32_t overruns)
 {
-    measure_rate();
+    measure_rate(overruns);
     capture_push(x, N, cw_tone_hz() > 0.0f || rtty_mark_hz() > 0.0f || fax_state() != FAX_IDLE ||
                            sstv_receiving());
     cw_process(x, N);
