@@ -90,7 +90,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .ftx th { position: sticky; top: 0; background: var(--panel2); color: var(--muted); font-weight: 600;
           text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); }
 .ftx td { padding: 3px 10px; white-space: nowrap; }
-.ftx td.n { text-align: right; color: var(--muted); }
+.ftx th.n, .ftx td.n { text-align: right; color: var(--muted); }
+.ftx th:not(:last-child), .ftx td:not(:last-child) { width: 1%; }    /* numbers tight, message takes the rest */
+.ftx th:last-child, .ftx td:last-child { padding-left: 18px; }
 .ftx tr.cq td.msg { color: var(--accent); }
 .ftx tr.new td { animation: flash 2s; }
 @keyframes flash { from { background: rgba(88,166,255,.25); } to { background: transparent; } }
@@ -242,7 +244,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       <div class="note" id="ftxInfo" style="margin-bottom: 8px">-</div>
       <div class="ftx">
         <table>
-          <thead><tr><th>UTC</th><th>dB</th><th>DT</th><th>Hz</th><th>Mensagem</th></tr></thead>
+          <thead><tr><th>UTC</th><th class="n">dB</th><th class="n">DT</th><th class="n">Hz</th><th>Mensagem</th></tr></thead>
           <tbody id="ftxRows"></tbody>
         </table>
       </div>
