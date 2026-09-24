@@ -166,6 +166,42 @@ void web_image_end(uint32_t id)
     xSemaphoreGive(lock);
 }
 
+// Gallery: the last WEB_GALLERY finished images (SSTV), each in its own
+// PSRAM buffer. `gal_seq` numbers them; a slot is reused for the newest.
+struct GalleryImg {
+    uint32_t n = 0;             // gal_seq when stored, 0 = empty
+    uint8_t *px = nullptr;
+    uint16_t w = 0, h = 0;
+    int64_t utc = 0;            // reception time (0 = clock not set)
+    char title[IMG_TITLE] = "";
+};
+static GalleryImg gallery[WEB_GALLERY];
+static uint32_t gal_seq = 0;
+
+void web_image_archive(uint32_t id)
+{
+    if (!lock || !img_ring)
+        return;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    if (id == img_id && img_channels == 3 && img_lines > 0 && img_lines <= img_cap) {
+        const size_t bytes = (size_t)img_width * 3;
+        uint8_t *px = (uint8_t *)heap_caps_malloc(bytes * img_lines, MALLOC_CAP_SPIRAM);
+        if (px) {
+            GalleryImg &g = gallery[gal_seq % WEB_GALLERY];
+            free(g.px);
+            memcpy(px, img_ring, bytes * img_lines);    // lines 0..n-1 sit at the ring start
+            g.px = px;
+            g.w = img_width;
+            g.h = img_lines;
+            const time_t now = time(nullptr);
+            g.utc = now > 1704067200 ? now : 0;
+            strlcpy(g.title, img_title, sizeof(g.title));
+            g.n = ++gal_seq;
+        }
+    }
+    xSemaphoreGive(lock);
+}
+
 // FT8/FT4 messages: ring of the last FTX_RING, numbered by `ftx_seq`.
 #define FTX_RING 64
 EXT_RAM_BSS_ATTR static FtxMessage ftx_ring[FTX_RING];
@@ -481,6 +517,7 @@ static int format_json(bool with_rows, char *json, size_t cap)
     n += snprintf(json + n, cap - n, ",\"sstv_rx\":%s,\"sstv_lines\":%d,\"sstv_mode\":",
                   sstv_receiving() ? "true" : "false", sstv_lines());
     n += json_str(json + n, cap - n, sstv_mode_name());
+    n += snprintf(json + n, cap - n, ",\"gal\":%" PRIu32, gal_seq);
     n += snprintf(json + n, cap - n,
                   ",\"ftx_mode\":%d,\"ftx_time\":%s,\"ftx_n\":%d,\"ftx_ms\":%d,\"ftx_lost\":%d,\"utc\":%lld",
                   g_settings.ftx_mode, ftx_time_ok() ? "true" : "false", ftx_last_count(), ftx_last_ms(),
@@ -611,6 +648,62 @@ static esp_err_t handle_ftx(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, json, o);
+}
+
+// GET /api/gallery -> {"seq":<n>,"imgs":[{"n":..,"title":..,"w":..,"h":..,"utc":..}, ...]}
+static esp_err_t handle_gallery(httpd_req_t *req)
+{
+    char json[WEB_GALLERY * 128 + 32];
+    xSemaphoreTake(lock, portMAX_DELAY);
+    int o = snprintf(json, sizeof(json), "{\"seq\":%" PRIu32 ",\"imgs\":[", gal_seq);
+    bool first = true;
+    for (const GalleryImg &g : gallery) {
+        if (!g.n)
+            continue;
+        o += snprintf(json + o, sizeof(json) - o, "%s{\"n\":%" PRIu32 ",\"w\":%u,\"h\":%u,\"utc\":%lld,\"title\":",
+                      first ? "" : ",", g.n, g.w, g.h, (long long)g.utc);
+        o += json_str(json + o, sizeof(json) - o, g.title);
+        o += snprintf(json + o, sizeof(json) - o, "}");
+        first = false;
+    }
+    xSemaphoreGive(lock);
+    o += snprintf(json + o, sizeof(json) - o, "]}");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, json, o);
+}
+
+// GET /api/gallery_img?n=<n> -> RGB pixels, w*h*3 bytes (size from /api/gallery).
+static esp_err_t handle_gallery_img(httpd_req_t *req)
+{
+    uint32_t want = 0;
+    char q[32], v[16];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+        httpd_query_key_value(q, "n", v, sizeof(v)) == ESP_OK)
+        want = strtoul(v, nullptr, 10);
+    const GalleryImg &g = gallery[(want + WEB_GALLERY - 1) % WEB_GALLERY];
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    // In chunks copied under the lock: the slot may be reused meanwhile.
+    EXT_RAM_BSS_ATTR static uint8_t buf[8192];    // HTTP server task only
+    size_t off = 0, total = 0;
+    esp_err_t err = ESP_OK;
+    do {
+        xSemaphoreTake(lock, portMAX_DELAY);
+        const bool held = want && g.n == want;
+        total = held ? (size_t)g.w * g.h * 3 : 0;
+        const size_t n = total - off < sizeof(buf) ? total - off : sizeof(buf);
+        if (held)
+            memcpy(buf, g.px + off, n);
+        xSemaphoreGive(lock);
+        if (!held)
+            return off ? ESP_FAIL : httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "sem imagem");
+        err = httpd_resp_send_chunk(req, (const char *)buf, n);
+        off += n;
+    } while (err == ESP_OK && off < total);
+    if (err == ESP_OK)
+        err = httpd_resp_send_chunk(req, nullptr, 0);
+    return err;
 }
 
 // ---------------------------------------------------------------------------
@@ -894,6 +987,7 @@ static void http_start()
     // Browsers keep connections open; without LRU purge the few sockets run
     // out after a while and requests hang (the page froze after minutes).
     cfg.lru_purge_enable = true;
+    cfg.max_uri_handlers = 12;
     cfg.max_open_sockets = 6;
     cfg.recv_wait_timeout = 5;
     // One task serves every client: a send to a dead peer blocked it for the
@@ -912,6 +1006,8 @@ static void http_start()
     register_uri("/api/wifi",   HTTP_POST, handle_wifi);
     register_uri("/api/img",    HTTP_GET,  handle_img);
     register_uri("/api/ftx",    HTTP_GET,  handle_ftx);
+    register_uri("/api/gallery", HTTP_GET, handle_gallery);
+    register_uri("/api/gallery_img", HTTP_GET, handle_gallery_img);
     register_uri("/ws",         HTTP_GET,  handle_ws, true);
 
     esp_timer_create_args_t targs = {};

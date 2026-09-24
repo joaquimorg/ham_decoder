@@ -517,7 +517,8 @@ void analyzer_init()
 void analyzer_process_block(const float *x, int32_t raw_peak, uint32_t overruns)
 {
     measure_rate();
-    capture_push(x, N, cw_tone_hz() > 0.0f || rtty_mark_hz() > 0.0f);
+    capture_push(x, N, cw_tone_hz() > 0.0f || rtty_mark_hz() > 0.0f || fax_state() != FAX_IDLE ||
+                           sstv_receiving());
     cw_process(x, N);
     rtty_process(x, N);
     static float fm_hz[N];

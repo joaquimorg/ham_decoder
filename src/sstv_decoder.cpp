@@ -39,6 +39,7 @@ constexpr float WIN_SHARE = 0.08f, WIN_MAX_MS = 30.0f;
 constexpr int FIT_MIN = 8;                          // syncs before fitting the line rate
 constexpr double SLANT_MAX = 0.005;                 // line rate within 0.5% of nominal
 constexpr int MISS_MAX = 30;                        // lines without sync: signal gone
+constexpr int GALLERY_MIN_ROWS = 32;                // shorter images are not kept
 
 enum Kind : uint8_t { RGB, R36, R72, PD };
 
@@ -164,6 +165,8 @@ const Mode *mode_for(int code)
 
 void end_image()
 {
+    if (receiving && rows_sent >= GALLERY_MIN_ROWS)
+        web_image_archive(web_id);
     if (receiving)
         web_image_end(web_id);
     receiving = false;

@@ -118,7 +118,7 @@
 #define WIFI_TX_POWER_QDBM  78
 
 // Capture: > 0 records this many seconds of the DSP stream (what the decoders
-// see) once the CW decoder locks, then dumps it over the console for
+// see) once a decoder locks (CW, RTTY, FAX, SSTV), then dumps it over the console for
 // tools/capture_to_wav.py. 0 = off.
 #define CAPTURE_SECONDS     0
 

@@ -95,6 +95,14 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .ftx tr.cq td.msg { color: var(--accent); }
 .ftx tr.new td { animation: flash 2s; }
 @keyframes flash { from { background: rgba(88,166,255,.25); } to { background: transparent; } }
+.gallery { display: flex; flex-wrap: wrap; gap: 12px; }
+.gallery figure { margin: 0; background: var(--panel2); border-radius: 8px; padding: 8px; width: 196px; }
+.gallery figure.big { width: 100%; }
+.gallery canvas { cursor: zoom-in; border-radius: 4px; }
+.gallery figure.big canvas { cursor: zoom-out; max-width: 800px; }
+.gallery figcaption { display: flex; justify-content: space-between; align-items: center; gap: 6px;
+                      margin-top: 6px; font-size: 12px; color: var(--muted); }
+.gallery figcaption button { padding: 2px 8px; font-size: 12px; }
 .imgbox { max-height: 75vh; overflow-y: auto; background: #000; border-radius: 6px; }
 #img { image-rendering: auto; border-radius: 0; }
 #img[hidden] { display: none; }
@@ -256,6 +264,10 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       </div>
       <div class="note" id="imgInfo" style="margin-bottom: 8px">Sem imagem.</div>
       <div class="imgbox"><canvas id="img" hidden></canvas></div>
+    </section>
+    <section class="card">
+      <h2>Últimas imagens SSTV</h2>
+      <div class="gallery" id="gallery"><span class="note">Ainda nenhuma. As últimas 5 ficam guardadas na placa.</span></div>
     </section>
     <div class="grid2">
       <section class="card">
@@ -464,6 +476,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     if (document.activeElement !== $('faxIoc')) $('faxIoc').value = String(d.fax_ioc);
     $('faxAuto').checked = d.fax_auto;
     showFtx(d);
+    if (d.gal !== galSeq) loadGallery(d.gal);
     const live = { cw: !!d.tone, rtty: !!d.rtty_on, ftx: d.ftx_mode > 0 && d.ftx_time,
                    img: d.fax_state > 0 || d.sstv_rx };
     for (const b of document.querySelectorAll('#tabs button')) b.classList.toggle('live', !!live[b.dataset.tab]);
@@ -732,6 +745,57 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 
   $('ftxMode').onchange = () => { ftxMode = +$('ftxMode').value; postConfig({ ftx_mode: $('ftxMode').value }); };
   $('ftxClear').onclick = () => { $('ftxRows').innerHTML = ''; };
+
+  // SSTV gallery: the last images kept on the board, as thumbnails (click to
+  // enlarge) with a PNG download each. Pixels are fetched once per image.
+  let galSeq = -1, galBusy = false;
+  const galCache = new Map();    // n -> figure
+
+  function savePng(canvas, name) {
+    const a = document.createElement('a');
+    a.download = name.replace(/[^\w-]+/g, '_') + '.png';
+    a.href = canvas.toDataURL('image/png'); a.click();
+  }
+
+  async function loadGallery(seq) {
+    if (galBusy) return;
+    galBusy = true;
+    try {
+      const list = await (await fetch('/api/gallery', { cache: 'no-store' })).json();
+      const box = $('gallery');
+      list.imgs.sort((a, b) => b.n - a.n);
+      for (const [n, fig] of galCache) if (!list.imgs.some(i => i.n === n)) { fig.remove(); galCache.delete(n); }
+      for (const im of list.imgs) {
+        if (galCache.has(im.n)) continue;
+        const buf = await (await fetch(`/api/gallery_img?n=${im.n}`, { cache: 'no-store' })).arrayBuffer();
+        if (buf.byteLength < im.w * im.h * 3) continue;
+        const c = document.createElement('canvas');
+        c.width = im.w; c.height = im.h;
+        const out = c.getContext('2d').createImageData(im.w, im.h), px = new Uint8Array(buf);
+        for (let i = 0, o = 0; i < im.w * im.h; i++, o += 4) {
+          out.data[o] = px[i * 3]; out.data[o + 1] = px[i * 3 + 1]; out.data[o + 2] = px[i * 3 + 2]; out.data[o + 3] = 255;
+        }
+        c.getContext('2d').putImageData(out, 0, 0);
+        const when = im.utc ? new Date(im.utc * 1000).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : '';
+        const fig = document.createElement('figure');
+        const cap = document.createElement('figcaption');
+        const label = document.createElement('span');
+        label.textContent = `${im.title.replace(/^SSTV /, '')}${when ? ' · ' + when : ''}`;
+        const btn = document.createElement('button');
+        btn.textContent = 'PNG';
+        const stamp = im.utc ? new Date(im.utc * 1000).toISOString().slice(0, 16).replace(/[:T-]/g, '') : im.n;
+        btn.onclick = () => savePng(c, `${im.title}_${stamp}`);
+        c.onclick = () => fig.classList.toggle('big');
+        cap.append(label, btn); fig.append(c, cap);
+        galCache.set(im.n, fig);
+      }
+      box.textContent = '';
+      for (const im of list.imgs) if (galCache.has(im.n)) box.appendChild(galCache.get(im.n));
+      if (!box.children.length) box.innerHTML = '<span class="note">Ainda nenhuma. As últimas 5 ficam guardadas na placa.</span>';
+      galSeq = seq;
+    } catch (e) {}
+    galBusy = false;
+  }
 
   $('faxStart').onclick = () => postConfig({ fax_start: 1 });
   $('imgStop').onclick = () => postConfig({ img_stop: 1 });

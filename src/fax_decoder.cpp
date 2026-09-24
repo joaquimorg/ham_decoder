@@ -37,7 +37,7 @@ constexpr int PHASE_TOL = W / 100;               // leftover phasing line: pulse
 constexpr int PH_MIN = 12, PH_MAX = 64;          // pulses to fit
 constexpr int PH_END_MISSES = 1;                 // lines without pulse: phasing over
 constexpr float PH_OUTLIER = 6.0f, PH_RMS = 3.0f;    // px
-constexpr float SLANT_MAX = 0.02f;               // line length within 2% of nominal
+constexpr float SLANT_MAX = 0.05f;               // line length within 5% of nominal
 constexpr int PHASE_MAX_LINES = 80;              // give up (and skip) after this
 constexpr float PHASE_FLAT = 0.15f;              // std. deviation outside the pulse
 
@@ -355,7 +355,7 @@ void fax_set_auto(bool on)
 
 void fax_set_sample_rate(float hz)
 {
-    if (hz > 0.99f * FS && hz < 1.01f * FS)
+    if (hz > 0.95f * FS && hz < 1.05f * FS)
         rate = hz;
 }
 
