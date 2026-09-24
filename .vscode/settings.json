@@ -1,0 +1,14 @@
+{
+  "idf.currentSetup": "D:\\Tools\\.espressif\\v5.5.4\\esp-idf",
+  "idf.portWin": "COM12",
+  "idf.flashType": "UART",
+  "idf.customExtraVars": {
+    "IDF_TARGET": "esp32s2"
+  },
+  "clangd.path": "C:\\Espressif\\tools\\esp-clang\\esp-19.1.2_20250312\\esp-clang\\bin\\clangd.exe",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=**",
+    "--compile-commands-dir=d:\\Work\\esp32\\ham_decoder\\build"
+  ]
+}

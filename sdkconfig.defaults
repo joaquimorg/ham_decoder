@@ -1,0 +1,7 @@
+# Common ESP-IDF defaults for all targets.
+# Target-specific defaults live in sdkconfig.defaults.<target>.
+CONFIG_FREERTOS_HZ=1000
+
+# WebSocket push for the web page (src/web_ui.cpp)
+CONFIG_HTTPD_WS_SUPPORT=y
+CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT=y
