@@ -17,14 +17,16 @@ constexpr float FS = (float)DSP_SAMPLE_RATE;
 constexpr int W = FAX_WIDTH;
 constexpr float BLACK_HZ = 1500.0f, WHITE_HZ = 2300.0f;
 
-// APT tones: the picture alternates black/white at the tone frequency, so the
-// discriminator output crosses the middle (1900 Hz) twice per cycle.
-constexpr float MID_HZ = 1900.0f, HYST_HZ = 150.0f;
+// APT tones: the discriminator output is modulated at the tone frequency, but
+// not always as a full black/white swing (a real stop tone was a 1900 Hz
+// carrier with sidebands at +-450 Hz: a small oscillation off 1900 Hz). So the
+// tone is found by the share of the output's variance at that frequency
+// (Goertzel over 0.25 s): a pure tone ~0.3..0.8, image content and noise < 0.02.
+constexpr float MID_HZ = 1900.0f;
 constexpr int TONE_WIN = DSP_SAMPLE_RATE / 4;    // 0.25 s windows
 constexpr int TONE_RUNS = 6;                     // 1.5 s of tone to trigger
 constexpr float STOP_HZ = 450.0f;
-constexpr float TONE_TOL = 0.3f;                 // half-period tolerance
-constexpr float TONE_GOOD = 0.8f;                // share of regular half periods
+constexpr float TONE_SHARE = 0.1f;
 
 // Phasing lines: black with a white pulse 5% of the line long, centred on the
 // line start. With the transmitter's line rate slightly off ours (sample clock
@@ -36,6 +38,8 @@ constexpr float PULSE_CONTRAST = 0.3f;
 constexpr int PHASE_TOL = W / 100;               // leftover phasing line: pulse within 1%
 constexpr int PH_MIN = 12, PH_MAX = 64;          // pulses to fit
 constexpr int PH_END_MISSES = 1;                 // lines without pulse: phasing over
+constexpr int PH_EDGE_EXCUSE = 2;                // lines at the edge not counted as misses
+constexpr int PH_SEG_MIN = 3;                    // points for a segment's own intercept
 constexpr float PH_OUTLIER = 6.0f, PH_RMS = 3.0f;    // px
 constexpr float SLANT_MAX = 0.05f;               // line length within 5% of nominal
 constexpr int PHASE_MAX_LINES = 80;              // give up (and skip) after this
@@ -58,14 +62,32 @@ int acc_n = 0;
 float line[W];
 int lines = 0;                 // lines since the start (phasing included)
 int image_lines = 0;           // lines sent to the page
-float ph_k[PH_MAX], ph_u[PH_MAX];    // line number, unwrapped pulse column
-int n_ph = 0, ph_misses = 0;
+float ph_k[PH_MAX], ph_u[PH_MAX];    // line number, pulse column
+// Pulse across the line edge: its halves come from consecutive transmitted
+// lines, already apart by the drift, which biases its centre (and the slope).
+bool ph_edge[PH_MAX];
+int ph_seg[PH_MAX];                  // segment: +1 each time the pulse crosses the edge
+int n_ph = 0, ph_misses = 0, ph_excused = 0;
 int ph_last = 0;                     // last pulse column (wrapped)
 
-// Tone detector
-bool hi = false;
-int since_edge = 0, win_n = 0, edges = 0, good_start = 0, good_stop = 0;
-int start_run = 0, stop_run = 0;
+// Tone detector: Goertzel filters at the start and stop tones, plus the
+// output's sum and sum of squares, over each window.
+struct Goertzel {
+    float coeff = 0.0f, s1 = 0.0f, s2 = 0.0f;
+    void set(float f) { coeff = 2.0f * cosf(2.0f * (float)M_PI * f / FS); }
+    void step(float x)
+    {
+        const float s = x + coeff * s1 - s2;
+        s2 = s1;
+        s1 = s;
+    }
+    float power() const { return s1 * s1 + s2 * s2 - coeff * s1 * s2; }
+    void clear() { s1 = s2 = 0.0f; }
+};
+Goertzel g_start, g_stop;
+float tone_for = 0.0f;           // start tone the filter is set for
+double sum = 0.0, sum2 = 0.0;
+int win_n = 0, start_run = 0, stop_run = 0;
 
 float nominal_line()
 {
@@ -77,18 +99,12 @@ float start_tone_hz()
     return ioc == 288 ? 675.0f : 300.0f;
 }
 
-bool regular(int interval, float tone_hz)
+// Share of the window's variance at the Goertzel filter's frequency (a pure
+// sine gives ~1).
+float tone_share(const Goertzel &g)
 {
-    const float half = FS / (2.0f * tone_hz);
-    return fabsf(interval - half) <= TONE_TOL * half;
-}
-
-// Window verdict: `good` regular half periods of a tone that should give
-// `expected` edges per window.
-bool tone_match(int good, float tone_hz)
-{
-    const float expected = 2.0f * tone_hz * TONE_WIN / FS;
-    return good >= TONE_GOOD * expected && edges <= (1.0f + TONE_TOL) * expected;
+    const double n = TONE_WIN, var = sum2 / n - (sum / n) * (sum / n);
+    return var > 0.0 ? (float)(2.0 * g.power() / (n * n * var)) : 0.0f;
 }
 
 void begin_image(bool phasing)
@@ -103,7 +119,7 @@ void begin_image(bool phasing)
     acc = 0.0f;
     acc_n = 0;
     lines = image_lines = 0;
-    n_ph = ph_misses = 0;
+    n_ph = ph_misses = ph_excused = 0;
     state = phasing ? FAX_PHASING : FAX_RECEIVING;
 }
 
@@ -171,39 +187,80 @@ void send_line()
     image_lines++;
 }
 
-// Least-squares line u = a + s*k through the phasing pulses, twice dropping
-// points further than PH_OUTLIER from it. False when it does not fit.
-bool phase_fit(float &a, float &s)
+// Fit of the phasing pulses: column u = a_g + s*k, one slope s (the drift per
+// line: slant) and one intercept per segment g. A new segment starts each time
+// the pulse crosses the line edge: from then on the pulse seen in a line is the
+// next transmitted one, one drift step away from a continuous line. Pulses
+// across the edge (biased centre) are left out when enough others remain;
+// points further than PH_OUTLIER are dropped twice. Returns the intercept of
+// the last segment (the one the next line belongs to). False when it does not fit.
+bool phase_fit(float &a_last, float &s)
 {
-    bool use[PH_MAX];
+    bool base[PH_MAX], use[PH_MAX];
+    int inner = 0;
     for (int i = 0; i < n_ph; i++)
-        use[i] = true;
+        inner += !ph_edge[i];
+    for (int i = 0; i < n_ph; i++)
+        base[i] = use[i] = inner >= PH_MIN ? !ph_edge[i] : true;
+    const int n_seg = n_ph ? ph_seg[n_ph - 1] + 1 : 0;
+    static double gn[PH_MAX], gk[PH_MAX], gu[PH_MAX];    // per segment (off the small stack)
     for (int iter = 0; iter < 3; iter++) {
-        double n = 0, sk = 0, su = 0, skk = 0, sku = 0;
+        for (int g = 0; g < n_seg; g++)
+            gn[g] = gk[g] = gu[g] = 0.0;
+        int n = 0;
         for (int i = 0; i < n_ph; i++) {
             if (!use[i])
                 continue;
+            const int g = ph_seg[i];
+            gn[g]++;
+            gk[g] += ph_k[i];
+            gu[g] += ph_u[i];
             n++;
-            sk += ph_k[i];
-            su += ph_u[i];
-            skk += (double)ph_k[i] * ph_k[i];
-            sku += (double)ph_k[i] * ph_u[i];
         }
-        const double den = n * skk - sk * sk;
-        if (n < PH_MIN || den <= 0.0)
+        if (n < PH_MIN)
             return false;
-        s = (float)((n * sku - sk * su) / den);
-        a = (float)((su - s * sk) / n);
-        double r2 = 0;
+        for (int g = 0; g < n_seg; g++)
+            if (gn[g] > 0.0) {
+                gk[g] /= gn[g];
+                gu[g] /= gn[g];
+            }
+        double sxy = 0.0, sxx = 0.0;
         for (int i = 0; i < n_ph; i++) {
-            const float r = ph_u[i] - (a + s * ph_k[i]);
+            if (!use[i])
+                continue;
+            const int g = ph_seg[i];
+            sxy += (ph_k[i] - gk[g]) * (ph_u[i] - gu[g]);
+            sxx += (ph_k[i] - gk[g]) * (ph_k[i] - gk[g]);
+        }
+        if (sxx <= 0.0)
+            return false;
+        s = (float)(sxy / sxx);
+        double r2 = 0.0;
+        for (int i = 0; i < n_ph; i++) {
+            const int g = ph_seg[i];
+            if (gn[g] <= 0.0) {
+                use[i] = false;
+                continue;
+            }
+            const float r = ph_u[i] - (float)(gu[g] + s * (ph_k[i] - gk[g]));
             if (use[i])
                 r2 += r * r;
             if (iter < 2)
-                use[i] = fabsf(r) <= PH_OUTLIER;
+                use[i] = base[i] && fabsf(r) <= PH_OUTLIER;
         }
-        if (iter == 2)
+        if (iter == 2) {
+            // Intercept of the last segment with enough points, carried over
+            // the later edge crossings: +(W+s) each (drift left), -(W+s) (drift right).
+            int g = n_seg - 1;
+            while (g > 0 && gn[g] < PH_SEG_MIN)
+                g--;
+            if (gn[g] <= 0.0)
+                return false;
+            a_last = (float)(gu[g] - s * gk[g]);
+            for (int later = g + 1; later < n_seg; later++)
+                a_last += s < 0.0f ? W + s : -(W + s);
             return sqrt(r2 / n) <= PH_RMS && fabsf(s) <= SLANT_MAX * W;
+        }
     }
     return false;
 }
@@ -213,28 +270,36 @@ bool phase_fit(float &a, float &s)
 void phasing_line()
 {
     const int c = pulse_centre();
-    float u = (float)c;
-    if (c >= 0 && n_ph) {
-        int d = c - ph_last;
-        if (d > W / 2)
-            d -= W;
-        else if (d < -W / 2)
-            d += W;
-        u = ph_u[n_ph - 1] + d;
-    }
+    const bool wrapped = c >= 0 && n_ph && abs(c - ph_last) > W / 2;
     // Once the drift is known, a "pulse" off the line is image content (the
-    // phasing is over), not a phasing pulse.
+    // phasing is over), not a phasing pulse. Across the edge the pulse also
+    // moves one drift step.
     float a, s;
-    if (c >= 0 && n_ph >= PH_MIN && phase_fit(a, s) && fabsf(u - (a + s * lines)) > 2.0f * PH_OUTLIER)
-        u = -1e9f;
-    if (c >= 0 && u > -1e8f) {
-        ph_last = c;
+    bool ok = c >= 0, at_edge = false;
+    if (n_ph >= PH_MIN && phase_fit(a, s)) {
+        // Where the fit expects this line's pulse: near or across the edge the
+        // pulse is split, doubled (drift left) or missing (drift right), and
+        // its absence is not the end of phasing.
+        const float raw = a + s * lines;
+        float pred = fmodf(raw, (float)W);
+        if (pred < 0.0f)
+            pred += W;
+        at_edge = raw < PULSE / 2 + PH_OUTLIER || raw > W - PULSE / 2 - PH_OUTLIER;
+        if (ok)
+            ok = circ_dist(c, (int)lroundf(pred) % W) <= PH_OUTLIER + (wrapped || at_edge ? fabsf(s) : 0.0f);
+    }
+    if (ok) {
         if (n_ph < PH_MAX) {
             ph_k[n_ph] = (float)lines;
-            ph_u[n_ph] = u;
+            ph_u[n_ph] = (float)c;
+            ph_seg[n_ph] = n_ph ? ph_seg[n_ph - 1] + (wrapped ? 1 : 0) : 0;
+            ph_edge[n_ph] = circ_dist(c, 0) <= PULSE / 2 + 2;
             n_ph++;
         }
-        ph_misses = 0;
+        ph_last = c;
+        ph_misses = ph_excused = 0;
+    } else if (at_edge && ph_excused < PH_EDGE_EXCUSE) {
+        ph_excused++;
     } else {
         ph_misses++;
     }
@@ -243,10 +308,13 @@ void phasing_line()
     if (!over)
         return;
     if (phase_fit(a, s)) {
-        // Pulse column in the next line, at the line length used so far.
-        float p = fmodf(a + s * (lines + 1), (float)W);
-        if (p < 0.0f)
-            p += W;
+        // Pulse column in the next line, at the line length used so far. Past
+        // the left edge the pulse in that line is the next transmitted one,
+        // W + s further (s < 0); past the right edge the line has none and the
+        // start lies beyond it (s > 0), which the delay below allows.
+        float p = a + s * (lines + 1);
+        while (p < 0.0f)
+            p += W + (s < 0.0f ? s : 0.0f);
         pos -= p * line_samples / W;
         slant *= 1.0f + s / W;
         line_samples = nominal_line();
@@ -313,22 +381,24 @@ void add_sample(float v)
 
 void tone_sample(float hz)
 {
-    since_edge++;
-    const bool edge = hi ? hz < MID_HZ - HYST_HZ : hz > MID_HZ + HYST_HZ;
-    if (edge) {
-        hi = !hi;
-        edges++;
-        if (regular(since_edge, start_tone_hz()))
-            good_start++;
-        if (regular(since_edge, STOP_HZ))
-            good_stop++;
-        since_edge = 0;
+    if (tone_for != start_tone_hz()) {
+        tone_for = start_tone_hz();
+        g_start.set(tone_for);
+        g_stop.set(STOP_HZ);
     }
+    const float x = hz - MID_HZ;
+    g_start.step(x);
+    g_stop.step(x);
+    sum += x;
+    sum2 += (double)x * x;
     if (++win_n < TONE_WIN)
         return;
-    start_run = tone_match(good_start, start_tone_hz()) ? start_run + 1 : 0;
-    stop_run = tone_match(good_stop, STOP_HZ) ? stop_run + 1 : 0;
-    win_n = edges = good_start = good_stop = 0;
+    start_run = tone_share(g_start) >= TONE_SHARE ? start_run + 1 : 0;
+    stop_run = tone_share(g_stop) >= TONE_SHARE ? stop_run + 1 : 0;
+    g_start.clear();
+    g_stop.clear();
+    sum = sum2 = 0.0;
+    win_n = 0;
 
     if (stop_run == TONE_RUNS)
         end_image();

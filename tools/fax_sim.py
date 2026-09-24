@@ -11,11 +11,12 @@ FS = 12000
 FM_CENTER, FM_CUTOFF, FM_TAPS = 1700.0, 1000.0, 63
 W = 904
 BLACK, WHITE = 1500.0, 2300.0
-MID, HYST = 1900.0, 150.0
-TONE_WIN, TONE_RUNS, STOP_HZ, TONE_TOL, TONE_GOOD = FS // 4, 6, 450.0, 0.3, 0.8
+MID = 1900.0
+TONE_WIN, TONE_RUNS, STOP_HZ, TONE_SHARE = FS // 4, 6, 450.0, 0.1
 PULSE, PULSE_CONTRAST = W // 20, 0.3
 PHASE_TOL, PHASE_MAX_LINES, PHASE_FLAT = W // 100, 80, 0.15
 PH_MIN, PH_MAX, PH_END_MISSES, PH_OUTLIER, PH_RMS, SLANT_MAX = 12, 64, 1, 6.0, 3.0, 0.05
+PH_EDGE_EXCUSE, PH_SEG_MIN = 2, 3
 MAX_LINES = 3000
 
 
@@ -39,21 +40,21 @@ class Fax:
         self.images = []              # finished images: lists of lines (0..1)
         self.image = None
         self.phase_at = None          # pulse centre used to align
-        self.hi = False
-        self.since_edge = self.win_n = self.edges = self.good_start = self.good_stop = 0
+        self.win_x = []
         self.start_run = self.stop_run = 0
         self.events = []
 
     def start_tone(self):
         return 675.0 if self.ioc == 288 else 300.0
 
-    def regular(self, interval, f):
-        half = FS / (2 * f)
-        return abs(interval - half) <= TONE_TOL * half
-
-    def tone_match(self, good, f):
-        expected = 2 * f * TONE_WIN / FS
-        return good >= TONE_GOOD * expected and self.edges <= (1 + TONE_TOL) * expected
+    @staticmethod
+    def tone_share(x, f):
+        """Share of the window's variance at f (Goertzel in fax_decoder.cpp)."""
+        x = np.asarray(x)
+        n = len(x)
+        g = abs(np.dot(x, np.exp(-2j * np.pi * f / FS * np.arange(n)))) ** 2
+        var = x.var()
+        return 2 * g / (n * n * var) if var > 0 else 0.0
 
     def begin(self, phasing, t):
         self.image = []
@@ -62,8 +63,9 @@ class Fax:
         self.pos, self.col, self.acc, self.acc_n = 0.0, 0, 0.0, 0
         self.line = np.zeros(W)
         self.lines = 0
-        self.ph = []                  # (line, unwrapped pulse column)
+        self.ph = []                  # (line, pulse column, at the edge, segment)
         self.ph_misses = 0
+        self.ph_excused = 0
         self.state = 'phasing' if phasing else 'rx'
         self.events.append(('start', round(t, 2)))
 
@@ -94,48 +96,75 @@ class Fax:
         return rest.var() < PHASE_FLAT ** 2
 
     def phase_fit(self):
+        """Common slope, one intercept per segment (see phase_fit() in C++)."""
         k = np.array([p[0] for p in self.ph], float)
         u = np.array([p[1] for p in self.ph], float)
-        use = np.ones(len(k), bool)
+        seg = np.array([p[3] for p in self.ph])
+        inner = ~np.array([p[2] for p in self.ph], bool)
+        base = inner if inner.sum() >= PH_MIN else np.ones(len(k), bool)
+        use = base.copy()
+        n_seg = seg[-1] + 1
         for it in range(3):
             if use.sum() < PH_MIN:
                 return None
-            s_, a_ = np.polyfit(k[use], u[use], 1)
-            r = u - (a_ + s_ * k)
+            gk = np.zeros(n_seg); gu = np.zeros(n_seg); gn = np.zeros(n_seg)
+            for g in range(n_seg):
+                m = use & (seg == g)
+                gn[g] = m.sum()
+                if gn[g]:
+                    gk[g] = k[m].mean(); gu[g] = u[m].mean()
+            dk = k - gk[seg]; du = u - gu[seg]
+            sxx = np.sum(dk[use] ** 2)
+            if sxx <= 0:
+                return None
+            s_ = np.sum(dk[use] * du[use]) / sxx
+            has = gn[seg] > 0
+            r = u - (gu[seg] + s_ * dk)
+            rms = np.sqrt(np.mean(r[use] ** 2))
             if it == 2:
-                ok = np.sqrt(np.mean(r[use] ** 2)) <= PH_RMS and abs(s_) <= SLANT_MAX * W
+                g = n_seg - 1
+                while g > 0 and gn[g] < PH_SEG_MIN:
+                    g -= 1
+                if not gn[g]:
+                    return None
+                a_ = gu[g] - s_ * gk[g] + (n_seg - 1 - g) * ((W + s_) if s_ < 0 else -(W + s_))
+                ok = rms <= PH_RMS and abs(s_) <= SLANT_MAX * W
                 return (a_, s_) if ok else None
-            use = np.abs(r) <= PH_OUTLIER
+            use = base & has & (np.abs(r) <= PH_OUTLIER)
 
     def phasing_line(self):
         c = self.pulse_centre()
-        u = float(c)
-        if c >= 0 and self.ph:
-            d = c - self.ph_last
-            if d > W // 2:
-                d -= W
-            elif d < -(W // 2):
-                d += W
-            u = self.ph[-1][1] + d
-        if c >= 0 and len(self.ph) >= PH_MIN:
+        wrapped = c >= 0 and bool(self.ph) and abs(c - self.ph_last) > W // 2
+        ok, at_edge = c >= 0, False
+        if len(self.ph) >= PH_MIN:
             fit = self.phase_fit()
-            if fit and abs(u - (fit[0] + fit[1] * self.lines)) > 2 * PH_OUTLIER:
-                c = -1                      # off the drift line: image content
-        if c >= 0:
-            self.ph_last = c
+            if fit:
+                raw = fit[0] + fit[1] * self.lines
+                pred = raw % W
+                at_edge = raw < PULSE // 2 + PH_OUTLIER or raw > W - PULSE // 2 - PH_OUTLIER
+                if ok:
+                    ok = self.circ(c, int(round(pred)) % W) <= PH_OUTLIER + (abs(fit[1]) if wrapped or at_edge else 0)
+        if ok:
             if len(self.ph) < PH_MAX:
-                self.ph.append((self.lines, u))
-            self.ph_misses = 0
+                seg = self.ph[-1][3] + (1 if wrapped else 0) if self.ph else 0
+                self.ph.append((self.lines, float(c), self.circ(c, 0) <= PULSE // 2 + 2, seg))
+            self.ph_last = c
+            self.ph_misses = self.ph_excused = 0
+        elif at_edge and self.ph_excused < PH_EDGE_EXCUSE:
+            self.ph_excused += 1
         else:
             self.ph_misses += 1
-        over = (len(self.ph) >= PH_MIN and self.ph_misses >= PH_END_MISSES) or len(self.ph) >= PH_MAX             or self.lines >= PHASE_MAX_LINES
+        over = (len(self.ph) >= PH_MIN and self.ph_misses >= PH_END_MISSES) or len(self.ph) >= PH_MAX \
+            or self.lines >= PHASE_MAX_LINES
         if not over:
             return
         fit = self.phase_fit()
         if fit:
             a_, s_ = fit
-            p = (a_ + s_ * (self.lines + 1)) % W
-            self.phase_at = round(p)
+            p = a_ + s_ * (self.lines + 1)
+            while p < 0:
+                p += W + min(s_, 0)
+            self.phase_at = round(p) % W
             self.pos -= p * self.line_samples / W
             self.slant *= 1 + s_ / W
             self.line_samples = FS * 60.0 / self.lpm * self.slant
@@ -176,22 +205,12 @@ class Fax:
             self.end_of_line(t)
 
     def tone_sample(self, hz, t):
-        self.since_edge += 1
-        edge = hz < MID - HYST if self.hi else hz > MID + HYST
-        if edge:
-            self.hi = not self.hi
-            self.edges += 1
-            if self.regular(self.since_edge, self.start_tone()):
-                self.good_start += 1
-            if self.regular(self.since_edge, STOP_HZ):
-                self.good_stop += 1
-            self.since_edge = 0
-        self.win_n += 1
-        if self.win_n < TONE_WIN:
+        self.win_x.append(hz - MID)
+        if len(self.win_x) < TONE_WIN:
             return
-        self.start_run = self.start_run + 1 if self.tone_match(self.good_start, self.start_tone()) else 0
-        self.stop_run = self.stop_run + 1 if self.tone_match(self.good_stop, STOP_HZ) else 0
-        self.win_n = self.edges = self.good_start = self.good_stop = 0
+        x, self.win_x = self.win_x, []
+        self.start_run = self.start_run + 1 if self.tone_share(x, self.start_tone()) >= TONE_SHARE else 0
+        self.stop_run = self.stop_run + 1 if self.tone_share(x, STOP_HZ) >= TONE_SHARE else 0
         if self.stop_run == TONE_RUNS:
             self.end(t, 'stop')
         elif self.start_run == TONE_RUNS and self.auto and self.state != 'phasing':
@@ -300,6 +319,10 @@ def selftest():
         ('relogio +0,4 %', {'clock': 1.004}, 0.06),
         ('relogio -0,4 %', {'clock': 0.996}, 0.06),
         ('relogio +0,15 %, 10 dB', {'clock': 1.0015, 'snr_db': 10.0}, 0.10),
+        ('relogio +1 %, pulso no bordo', {'clock': 1.01, 'offset': 0.1}, 0.05),
+        ('relogio -1 %, pulso no bordo', {'clock': 0.99, 'offset': 0.1}, 0.05),
+        ('relogio +3 %', {'clock': 1.03}, 0.05),
+        ('relogio -3 %', {'clock': 0.97}, 0.05),
     ]:
         fax, err, n = run_case(name, **kw)
         lines = kw.get('lines', 120)
