@@ -10,6 +10,12 @@
 #include <ft8/encode.h>
 #include <ft8/message.h>
 
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#else
+#define EXT_RAM_BSS_ATTR
+#endif
+
 // Validated on a PC with tools/ftx_test (synthetic FT8/FT4 with noise, several
 // signals per slot, arbitrary start times). Keep both in sync.
 
@@ -99,7 +105,7 @@ struct HashEntry {
     char callsign[12];
     uint32_t hash;    // 8 MSBs: age; 22 LSBs: hash
 };
-HashEntry hash_table[HASH_SIZE];
+EXT_RAM_BSS_ATTR HashEntry hash_table[HASH_SIZE];
 
 void hash_cleanup(uint8_t max_age)
 {
@@ -155,7 +161,7 @@ ftx_callsign_hash_interface_t hash_if = { hash_lookup, hash_add };
 // noise power.
 float noise_power(const ftx_waterfall_t &wf)
 {
-    static uint32_t hist[256];
+    EXT_RAM_BSS_ATTR static uint32_t hist[256];
     memset(hist, 0, sizeof(hist));
     const int n = wf.num_blocks * wf.block_stride;
     for (int i = 0; i < n; i++)
@@ -288,8 +294,8 @@ int ftx_core_decode(int handle, double slot_start, FtxMessageCb cb, void *ctx)
     const monitor_t &mon = P.buf[handle % 2].mon;
     const ftx_waterfall_t *wf = &mon.wf;
 
-    static ftx_candidate_t cands[MAX_CANDIDATES];    // decoding task only
-    static ftx_message_t decoded[MAX_DECODED];
+    EXT_RAM_BSS_ATTR static ftx_candidate_t cands[MAX_CANDIDATES];    // decoding task only
+    EXT_RAM_BSS_ATTR static ftx_message_t decoded[MAX_DECODED];
     const int n_cand = ftx_find_candidates(wf, MAX_CANDIDATES, cands, MIN_SCORE);
     const float pn = n_cand ? noise_power(*wf) : 1.0f;
     int n_dec = 0;

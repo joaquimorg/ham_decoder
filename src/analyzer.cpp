@@ -16,8 +16,12 @@
 #include "classifier.h"
 #include "settings.h"
 #include "web_ui.h"
+#include "esp_timer.h"
+#include "esp_log.h"
 
 namespace {
+
+const char *TAG = "ANALYZER";
 
 constexpr int N = FFT_SIZE;
 constexpr int HALF = N / 2;
@@ -53,6 +57,32 @@ int rtty_unlock_reports = 0;
 int32_t peak_raw = 0;
 uint32_t last_overruns = 0;
 uint32_t report_no = 0;
+
+// Real DSP sample rate, measured against esp_timer (crystal): the ADC's
+// continuous mode is a few 0.1% off its nominal rate, which slants FAX images.
+int64_t rate_t0 = 0;
+uint64_t rate_samples = 0;
+float measured_rate = 0.0f;
+constexpr int64_t RATE_MIN_US = 20000000;    // measure at least 20 s
+
+void measure_rate()
+{
+    const int64_t now = esp_timer_get_time();
+    if (!rate_t0) {
+        rate_t0 = now;    // count from the end of this block on
+        return;
+    }
+    rate_samples += N;
+    const int64_t us = now - rate_t0;
+    if (us < RATE_MIN_US)
+        return;
+    const bool first = measured_rate == 0.0f;
+    measured_rate = (float)(rate_samples * 1e6 / us);
+    fax_set_sample_rate(measured_rate);
+    if (first || report_no % 600 == 0)
+        ESP_LOGW(TAG, "taxa de amostragem medida: %.2f Hz (%+.0f ppm)", measured_rate,
+                 (measured_rate / DSP_SAMPLE_RATE - 1.0f) * 1e6f);
+}
 
 double level_acc = 0;
 uint32_t level_n = 0;
@@ -306,10 +336,26 @@ void report()
         snprintf(label, sizeof(label), "RTTY %.0f/%.0fHz %.0fbd",
                  rtty_mark_hz(), rtty_space_hz(), rtty_baud());
     }
+    // An image being received has priority over both: FAX/SSTV (FM between
+    // 1500 and 2300 Hz) looks like FSK to the classifier, and RTTY and CW
+    // would print garbage from it.
+    const FaxState fax = fax_state();
+    const bool image_on = fax != FAX_IDLE || sstv_receiving();
+    if (image_on) {
+        narrow_tone = false;
+        fsk_lo = fsk_hi = 0.0f;
+        if (sstv_receiving())
+            snprintf(label, sizeof(label), "SSTV %s", sstv_mode_name());
+        else
+            snprintf(label, sizeof(label), "FAX %dlpm%s", g_settings.fax_lpm,
+                     fax == FAX_PHASING ? " fase" : "");
+    }
 
     // Keep the CW decoder on the tone; hold the lock through short pauses.
     // A manual tone (web settings) overrides the automatic choice.
-    if (rtty_on) {
+    if (image_on) {
+        cw_set_tone(0.0f);
+    } else if (rtty_on) {
         cw_set_tone(0.0f);
         unlock_reports = 0;
     } else if (!g_settings.cw_auto_tone) {
@@ -328,7 +374,10 @@ void report()
     // RTTY follows the two FSK tones, held through short pauses.
     rtty_set_baud(g_settings.rtty_baud);
     rtty_set_polarity((RttyPolarity)g_settings.rtty_polarity);
-    if (fsk_lo > 0.0f) {
+    if (image_on) {
+        if (rtty_mark_hz() > 0.0f)
+            rtty_set_tones(0.0f, 0.0f);
+    } else if (fsk_lo > 0.0f) {
         rtty_set_tones(fsk_lo, fsk_hi);
         rtty_unlock_reports = 0;
     } else if (rtty_on) {
@@ -467,6 +516,7 @@ void analyzer_init()
 
 void analyzer_process_block(const float *x, int32_t raw_peak, uint32_t overruns)
 {
+    measure_rate();
     capture_push(x, N, cw_tone_hz() > 0.0f || rtty_mark_hz() > 0.0f);
     cw_process(x, N);
     rtty_process(x, N);

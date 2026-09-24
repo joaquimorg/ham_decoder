@@ -74,6 +74,18 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .seg button.on.manual { background: var(--manual); }
 .val { font: 13px var(--mono); color: var(--muted); min-width: 60px; }
 .note { font-size: 13px; color: var(--muted); }
+.tabs { display: flex; gap: 4px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+        box-shadow: inset 0 -1px var(--line); position: sticky;
+        top: 0; z-index: 5; background: var(--bg); padding-top: 4px; }
+.tabs button { border: 1px solid transparent; border-bottom: 0; border-radius: 8px 8px 0 0;
+               background: transparent; color: var(--muted); padding: 8px 16px; white-space: nowrap; font-weight: 600; }
+.tabs button.on { background: var(--panel); border-color: var(--line); color: var(--text); }
+.tabs::-webkit-scrollbar { display: none; }
+.tabs button .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+                    margin-left: 6px; vertical-align: middle; visibility: hidden; }
+.tabs button.live .dot { visibility: visible; }
+.pane { display: none; gap: 16px; }
+.pane.on { display: grid; }
 .ftx { max-height: 420px; overflow-y: auto; background: var(--panel2); border-radius: 8px; }
 .ftx table { width: 100%; border-collapse: collapse; font: 14px/1.5 var(--mono); }
 .ftx th { position: sticky; top: 0; background: var(--panel2); color: var(--muted); font-weight: 600;
@@ -133,128 +145,148 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     <div class="hint">Verde: tom CW (âmbar em manual). Azul: marca (tracejado) e espaço (pontilhado) do RTTY. Clica no waterfall para fixar o tom CW nessa frequência.</div>
   </section>
 
-  <section class="card">
-    <div class="row" style="justify-content: space-between; margin-bottom: 10px">
-      <h2 style="margin: 0">Texto CW</h2>
-      <div class="row">
-        <button id="copy">Copiar</button>
-        <button id="clear">Limpar</button>
-      </div>
-    </div>
-    <pre class="decoded" id="text"></pre>
-  </section>
+  <nav class="tabs" id="tabs">
+    <button data-tab="cw">CW</button>
+    <button data-tab="rtty">RTTY</button>
+    <button data-tab="ftx">FT8 / FT4</button>
+    <button data-tab="img">FAX / SSTV</button>
+    <button data-tab="cfg">Definições</button>
+  </nav>
 
-  <section class="card">
-    <div class="row" style="justify-content: space-between; margin-bottom: 10px">
-      <h2 style="margin: 0">Texto RTTY</h2>
-      <div class="row">
-        <button id="rcopy">Copiar</button>
-        <button id="rclear">Limpar</button>
-      </div>
-    </div>
-    <pre class="decoded" id="rtext"></pre>
-  </section>
-
-  <section class="card">
-    <div class="row" style="justify-content: space-between; margin-bottom: 10px">
-      <h2 style="margin: 0">FT8 / FT4</h2>
-      <div class="row">
-        <select id="ftxMode">
-          <option value="0">Desligado</option>
-          <option value="1">FT8</option>
-          <option value="2">FT4</option>
-        </select>
-        <button id="ftxClear">Limpar</button>
-      </div>
-    </div>
-    <div class="note" id="ftxInfo" style="margin-bottom: 8px">-</div>
-    <div class="ftx">
-      <table>
-        <thead><tr><th>UTC</th><th>dB</th><th>DT</th><th>Hz</th><th>Mensagem</th></tr></thead>
-        <tbody id="ftxRows"></tbody>
-      </table>
-    </div>
-  </section>
-
-  <section class="card">
-    <div class="row" style="justify-content: space-between; margin-bottom: 10px">
-      <h2 style="margin: 0">Imagem (FAX / SSTV)</h2>
-      <div class="row">
-        <button id="faxStart">Iniciar FAX agora</button>
-        <button id="imgStop">Parar</button>
-        <button id="imgSave">Guardar PNG</button>
-        <button id="imgClear">Limpar</button>
-      </div>
-    </div>
-    <div class="note" id="imgInfo" style="margin-bottom: 8px">Sem imagem.</div>
-    <div class="imgbox"><canvas id="img" hidden></canvas></div>
-  </section>
-
-  <div class="grid2">
+  <div class="pane" data-pane="cw">
     <section class="card">
-      <h2>Descodificador CW</h2>
-      <div class="row">
-        <span>Tom</span>
-        <div class="seg"><button id="auto">Automático</button><button id="manual">Manual</button></div>
-        <input type="number" id="toneHz" min="100" max="3500" step="1">
-        <span class="note">Hz</span>
-        <button id="applyTone">Aplicar</button>
+      <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+        <h2 style="margin: 0">Texto CW</h2>
+        <div class="row">
+          <button id="copy">Copiar</button>
+          <button id="clear">Limpar</button>
+        </div>
       </div>
-      <div class="row">
-        <label for="contrast">Contraste mínimo</label>
-        <input type="range" id="contrast" min="2" max="12" step="0.5">
-        <span class="val" id="contrastVal"></span>
-      </div>
-      <div class="note" style="margin-top: 8px">Valores mais baixos descodificam sinais mais fracos, mas deixam passar mais ruído.</div>
+      <pre class="decoded" id="text"></pre>
     </section>
+    <div class="grid2">
+      <section class="card">
+        <h2>Descodificador CW</h2>
+        <div class="row">
+          <span>Tom</span>
+          <div class="seg"><button id="auto">Automático</button><button id="manual">Manual</button></div>
+          <input type="number" id="toneHz" min="100" max="3500" step="1">
+          <span class="note">Hz</span>
+          <button id="applyTone">Aplicar</button>
+        </div>
+        <div class="row">
+          <label for="contrast">Contraste mínimo</label>
+          <input type="range" id="contrast" min="2" max="12" step="0.5">
+          <span class="val" id="contrastVal"></span>
+        </div>
+        <div class="note" style="margin-top: 8px">Valores mais baixos descodificam sinais mais fracos, mas deixam passar mais ruído.</div>
+      </section>
+    </div>
+  </div>
 
+  <div class="pane" data-pane="rtty">
     <section class="card">
-      <h2>Descodificador RTTY</h2>
-      <div class="row">
-        <label for="baud" style="min-width: 90px">Velocidade</label>
-        <select id="baud">
-          <option value="45.45">45,45 baud</option>
-          <option value="50">50 baud</option>
-          <option value="75">75 baud</option>
-          <option value="100">100 baud</option>
-        </select>
+      <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+        <h2 style="margin: 0">Texto RTTY</h2>
+        <div class="row">
+          <button id="rcopy">Copiar</button>
+          <button id="rclear">Limpar</button>
+        </div>
       </div>
-      <div class="row">
-        <label for="pol" style="min-width: 90px">Polaridade</label>
-        <select id="pol">
-          <option value="0">Automática</option>
-          <option value="1">Normal (marca = tom baixo)</option>
-          <option value="2">Invertida</option>
-        </select>
-      </div>
-      <div class="note" style="margin-top: 8px">Os tons são detetados automaticamente (desvios de 170 a 850 Hz). Em automático, a marca é o tom que domina no tempo.</div>
+      <pre class="decoded" id="rtext"></pre>
     </section>
+    <div class="grid2">
+      <section class="card">
+        <h2>Descodificador RTTY</h2>
+        <div class="row">
+          <label for="baud" style="min-width: 90px">Velocidade</label>
+          <select id="baud">
+            <option value="45.45">45,45 baud</option>
+            <option value="50">50 baud</option>
+            <option value="75">75 baud</option>
+            <option value="100">100 baud</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="pol" style="min-width: 90px">Polaridade</label>
+          <select id="pol">
+            <option value="0">Automática</option>
+            <option value="1">Normal (marca = tom baixo)</option>
+            <option value="2">Invertida</option>
+          </select>
+        </div>
+        <div class="note" style="margin-top: 8px">Os tons são detetados automaticamente (desvios de 170 a 850 Hz). Em automático, a marca é o tom que domina no tempo.</div>
+      </section>
+    </div>
+  </div>
 
+  <div class="pane" data-pane="ftx">
     <section class="card">
-      <h2>Descodificador FAX</h2>
-      <div class="row">
-        <label for="faxLpm" style="min-width: 90px">Velocidade</label>
-        <select id="faxLpm">
-          <option value="60">60 linhas/min</option>
-          <option value="90">90 linhas/min</option>
-          <option value="120">120 linhas/min</option>
-          <option value="240">240 linhas/min</option>
-        </select>
+      <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+        <h2 style="margin: 0">FT8 / FT4</h2>
+        <div class="row">
+          <select id="ftxMode">
+            <option value="0">Desligado</option>
+            <option value="1">FT8</option>
+            <option value="2">FT4</option>
+          </select>
+          <button id="ftxClear">Limpar</button>
+        </div>
       </div>
-      <div class="row">
-        <label for="faxIoc" style="min-width: 90px">IOC</label>
-        <select id="faxIoc">
-          <option value="576">576</option>
-          <option value="288">288</option>
-        </select>
+      <div class="note" id="ftxInfo" style="margin-bottom: 8px">-</div>
+      <div class="ftx">
+        <table>
+          <thead><tr><th>UTC</th><th>dB</th><th>DT</th><th>Hz</th><th>Mensagem</th></tr></thead>
+          <tbody id="ftxRows"></tbody>
+        </table>
       </div>
-      <div class="row">
-        <label><input type="checkbox" id="faxAuto"> Começar sozinho com o tom de início</label>
-      </div>
-      <div class="note" style="margin-top: 8px">Sintoniza em USB com a portadora 1,9 kHz abaixo da frequência publicada (1500 Hz = preto, 2300 Hz = branco). A meio de uma emissão, usa «Iniciar FAX agora».</div>
-      <div class="note" style="margin-top: 8px">SSTV (Martin, Scottie, Robot, PD) começa sozinho com o cabeçalho VIS; não precisa de configuração.</div>
     </section>
+  </div>
 
+  <div class="pane" data-pane="img">
+    <section class="card">
+      <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+        <h2 style="margin: 0">Imagem (FAX / SSTV)</h2>
+        <div class="row">
+          <button id="faxStart">Iniciar FAX agora</button>
+          <button id="imgStop">Parar</button>
+          <button id="imgSave">Guardar PNG</button>
+          <button id="imgClear">Limpar</button>
+        </div>
+      </div>
+      <div class="note" id="imgInfo" style="margin-bottom: 8px">Sem imagem.</div>
+      <div class="imgbox"><canvas id="img" hidden></canvas></div>
+    </section>
+    <div class="grid2">
+      <section class="card">
+        <h2>Descodificador FAX</h2>
+        <div class="row">
+          <label for="faxLpm" style="min-width: 90px">Velocidade</label>
+          <select id="faxLpm">
+            <option value="60">60 linhas/min</option>
+            <option value="90">90 linhas/min</option>
+            <option value="120">120 linhas/min</option>
+            <option value="240">240 linhas/min</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="faxIoc" style="min-width: 90px">IOC</label>
+          <select id="faxIoc">
+            <option value="576">576</option>
+            <option value="288">288</option>
+          </select>
+        </div>
+        <div class="row">
+          <label><input type="checkbox" id="faxAuto"> Começar sozinho com o tom de início</label>
+        </div>
+        <div class="note" style="margin-top: 8px">Sintoniza em USB com a portadora 1,9 kHz abaixo da frequência publicada (1500 Hz = preto, 2300 Hz = branco). A meio de uma emissão, usa «Iniciar FAX agora».</div>
+        <div class="note" style="margin-top: 8px">SSTV (Martin, Scottie, Robot, PD) começa sozinho com o cabeçalho VIS; não precisa de configuração.</div>
+      </section>
+    </div>
+  </div>
+
+  <div class="pane" data-pane="cfg">
+    <div class="grid2">
     <section class="card">
       <h2>Waterfall</h2>
       <div class="row">
@@ -269,7 +301,6 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       </div>
       <div class="note" style="margin-top: 8px">Estes valores ficam guardados neste browser.</div>
     </section>
-
     <section class="card">
       <h2>Rede Wi-Fi</h2>
       <form id="wifi">
@@ -278,6 +309,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
         <div class="row"><button class="primary" type="submit">Guardar e reiniciar</button><span class="note" id="wifiMsg"></span></div>
       </form>
     </section>
+    </div>
   </div>
 </main>
 
@@ -432,6 +464,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     if (document.activeElement !== $('faxIoc')) $('faxIoc').value = String(d.fax_ioc);
     $('faxAuto').checked = d.fax_auto;
     showFtx(d);
+    const live = { cw: !!d.tone, rtty: !!d.rtty_on, ftx: d.ftx_mode > 0 && d.ftx_time,
+                   img: d.fax_state > 0 || d.sstv_rx };
+    for (const b of document.querySelectorAll('#tabs button')) b.classList.toggle('live', !!live[b.dataset.tab]);
     faxState = d.fax_state;
     sstv = d.sstv_rx ? `a receber ${d.sstv_mode}` : 'à espera do cabeçalho VIS';
     showImgInfo();
@@ -727,6 +762,21 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   connectWs();
   pollImg();
   pollFtx();
+
+  // Tabs: one mode at a time under the spectrum; the choice is kept in this
+  // browser. A dot marks tabs with something being decoded.
+  function showTab(name) {
+    for (const b of document.querySelectorAll('#tabs button')) b.classList.toggle('on', b.dataset.tab === name);
+    for (const p of document.querySelectorAll('.pane')) p.classList.toggle('on', p.dataset.pane === name);
+    try { localStorage.setItem('tab', name); } catch (e) {}
+  }
+  for (const b of document.querySelectorAll('#tabs button')) {
+    b.insertAdjacentHTML('beforeend', '<span class="dot"></span>');
+    b.onclick = () => showTab(b.dataset.tab);
+  }
+  let tab0 = 'cw';
+  try { tab0 = localStorage.getItem('tab') || 'cw'; } catch (e) {}
+  showTab(document.querySelector(`#tabs button[data-tab="${tab0}"]`) ? tab0 : 'cw');
 })();
 </script>
 </body>

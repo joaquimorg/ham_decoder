@@ -18,6 +18,7 @@
 #include "esp_system.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_attr.h"
 
 #include "config.h"
 #include "settings.h"
@@ -41,7 +42,7 @@ static const char *TAG = "WEB";
 
 static SemaphoreHandle_t lock;
 
-static uint8_t rows[ROWS][WEB_BINS];
+EXT_RAM_BSS_ATTR static uint8_t rows[ROWS][WEB_BINS];
 static uint32_t row_seq = 0;    // number of rows ever pushed
 
 struct TextRing {
@@ -167,7 +168,7 @@ void web_image_end(uint32_t id)
 
 // FT8/FT4 messages: ring of the last FTX_RING, numbered by `ftx_seq`.
 #define FTX_RING 64
-static FtxMessage ftx_ring[FTX_RING];
+EXT_RAM_BSS_ATTR static FtxMessage ftx_ring[FTX_RING];
 static uint32_t ftx_seq = 0;
 
 void web_push_ftx(const FtxMessage &m)
@@ -407,7 +408,7 @@ struct Snapshot {
     char text[2][TEXT_RING + 1];
     WebStatus st;
 };
-static Snapshot snap;    // used only from the HTTP server task
+EXT_RAM_BSS_ATTR static Snapshot snap;    // used only from the HTTP server task
 
 static void take_snapshot(uint32_t want_row, uint32_t want_t, uint32_t want_u)
 {
@@ -489,7 +490,7 @@ static int format_json(bool with_rows, char *json, size_t cap)
     return n;
 }
 
-static char json_buf[28 * 1024];    // HTTP server task only
+EXT_RAM_BSS_ATTR static char json_buf[28 * 1024];    // HTTP server task only
 
 // GET /api/data?r=<next row>&t=<next CW char>&u=<next RTTY char>
 // Polling fallback for browsers where the WebSocket does not work.
@@ -557,7 +558,7 @@ static esp_err_t handle_img(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     esp_err_t err = httpd_resp_send_chunk(req, (const char *)head, sizeof(head));
     // A few lines at a time: copied under the lock, sent without it.
-    static uint8_t buf[2 * WEB_IMG_MAX_LINE];    // HTTP server task only
+    EXT_RAM_BSS_ATTR static uint8_t buf[2 * WEB_IMG_MAX_LINE];    // HTTP server task only
     const uint32_t last = total - first > IMG_MAX_SEND ? first + IMG_MAX_SEND : total;
     const uint32_t per_send = bytes ? sizeof(buf) / bytes : 0;
     for (uint32_t k = first; k < last && err == ESP_OK;) {
@@ -587,7 +588,7 @@ static esp_err_t handle_ftx(httpd_req_t *req)
     if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
         httpd_query_key_value(q, "s", v, sizeof(v)) == ESP_OK)
         want = strtoul(v, nullptr, 10);
-    static FtxMessage msgs[FTX_RING];    // HTTP server task only
+    EXT_RAM_BSS_ATTR static FtxMessage msgs[FTX_RING];    // HTTP server task only
     xSemaphoreTake(lock, portMAX_DELAY);
     const uint32_t seq = ftx_seq;
     if (want > seq || seq - want > FTX_RING)
@@ -597,7 +598,7 @@ static esp_err_t handle_ftx(httpd_req_t *req)
         msgs[i] = ftx_ring[(want + i) % FTX_RING];
     xSemaphoreGive(lock);
 
-    static char json[FTX_RING * 96 + 32];
+    EXT_RAM_BSS_ATTR static char json[FTX_RING * 96 + 32];
     int o = snprintf(json, sizeof(json), "{\"s\":%" PRIu32 ",\"m\":[", seq);
     for (int i = 0; i < n; i++) {
         const FtxMessage &m = msgs[i];
@@ -633,7 +634,7 @@ struct WsClient {
 static WsClient ws_clients[WS_MAX_CLIENTS];
 static volatile bool ws_push_pending = false;
 static httpd_handle_t server = nullptr;
-static uint8_t ws_bin[2 + ROWS * WEB_BINS];
+EXT_RAM_BSS_ATTR static uint8_t ws_bin[2 + ROWS * WEB_BINS];
 
 // Clients never send data; read and discard whatever arrives.
 static esp_err_t handle_ws(httpd_req_t *req)

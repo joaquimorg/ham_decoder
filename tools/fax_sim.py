@@ -14,7 +14,8 @@ BLACK, WHITE = 1500.0, 2300.0
 MID, HYST = 1900.0, 150.0
 TONE_WIN, TONE_RUNS, STOP_HZ, TONE_TOL, TONE_GOOD = FS // 4, 6, 450.0, 0.3, 0.8
 PULSE, PULSE_CONTRAST = W // 20, 0.3
-PHASE_AGREE, PHASE_TOL, PHASE_MAX_LINES, PHASE_FLAT = 8, W // 100, 70, 0.15
+PHASE_TOL, PHASE_MAX_LINES, PHASE_FLAT = W // 100, 80, 0.15
+PH_MIN, PH_MAX, PH_END_MISSES, PH_OUTLIER, PH_RMS, SLANT_MAX = 12, 64, 1, 6.0, 3.0, 0.02
 MAX_LINES = 3000
 
 
@@ -56,11 +57,13 @@ class Fax:
 
     def begin(self, phasing, t):
         self.image = []
+        self.slant = 1.0
         self.line_samples = FS * 60.0 / self.lpm
         self.pos, self.col, self.acc, self.acc_n = 0.0, 0, 0.0, 0
         self.line = np.zeros(W)
         self.lines = 0
-        self.centres = []
+        self.ph = []                  # (line, unwrapped pulse column)
+        self.ph_misses = 0
         self.state = 'phasing' if phasing else 'rx'
         self.events.append(('start', round(t, 2)))
 
@@ -90,24 +93,60 @@ class Fax:
         rest = self.line[PULSE:W - PULSE]
         return rest.var() < PHASE_FLAT ** 2
 
+    def phase_fit(self):
+        k = np.array([p[0] for p in self.ph], float)
+        u = np.array([p[1] for p in self.ph], float)
+        use = np.ones(len(k), bool)
+        for it in range(3):
+            if use.sum() < PH_MIN:
+                return None
+            s_, a_ = np.polyfit(k[use], u[use], 1)
+            r = u - (a_ + s_ * k)
+            if it == 2:
+                ok = np.sqrt(np.mean(r[use] ** 2)) <= PH_RMS and abs(s_) <= SLANT_MAX * W
+                return (a_, s_) if ok else None
+            use = np.abs(r) <= PH_OUTLIER
+
+    def phasing_line(self):
+        c = self.pulse_centre()
+        u = float(c)
+        if c >= 0 and self.ph:
+            d = c - self.ph_last
+            if d > W // 2:
+                d -= W
+            elif d < -(W // 2):
+                d += W
+            u = self.ph[-1][1] + d
+        if c >= 0 and len(self.ph) >= PH_MIN:
+            fit = self.phase_fit()
+            if fit and abs(u - (fit[0] + fit[1] * self.lines)) > 2 * PH_OUTLIER:
+                c = -1                      # off the drift line: image content
+        if c >= 0:
+            self.ph_last = c
+            if len(self.ph) < PH_MAX:
+                self.ph.append((self.lines, u))
+            self.ph_misses = 0
+        else:
+            self.ph_misses += 1
+        over = (len(self.ph) >= PH_MIN and self.ph_misses >= PH_END_MISSES) or len(self.ph) >= PH_MAX             or self.lines >= PHASE_MAX_LINES
+        if not over:
+            return
+        fit = self.phase_fit()
+        if fit:
+            a_, s_ = fit
+            p = (a_ + s_ * (self.lines + 1)) % W
+            self.phase_at = round(p)
+            self.pos -= p * self.line_samples / W
+            self.slant *= 1 + s_ / W
+            self.line_samples = FS * 60.0 / self.lpm * self.slant
+            if self.pos >= 0:
+                self.pos -= self.line_samples
+        self.state = 'rx'
+
     def end_of_line(self, t):
         self.lines += 1
         if self.state == 'phasing':
-            c = self.pulse_centre()
-            if c < 0:
-                self.centres = []
-            else:
-                if self.centres and self.circ(c, self.centres[-1]) > PHASE_TOL:
-                    self.centres = []
-                self.centres.append(c)
-            if len(self.centres) == PHASE_AGREE:
-                self.phase_at = c
-                self.pos -= c * self.line_samples / W
-                if self.pos >= 0:
-                    self.pos -= self.line_samples
-                self.state = 'rx'
-            elif self.lines >= PHASE_MAX_LINES:
-                self.state = 'rx'
+            self.phasing_line()
             return
         if self.lines < PHASE_MAX_LINES and self.looks_like_phasing():
             return
@@ -189,10 +228,11 @@ def test_pattern(n_lines, width=1810):
 
 
 def transmit(img, lpm=120, ioc=576, lead=2.0, offset=0.37, snr_db=20.0, mistune=0.0,
-             start=True, phasing=True, stop=True, seed=1):
+             start=True, phasing=True, stop=True, seed=1, clock=1.0):
     """Audio at FS: start tone, phasing lines, image, stop tone.
-    offset: where (share of a line) the receiver's line clock starts."""
-    ls = FS * 60.0 / lpm
+    offset: where (share of a line) the receiver's line clock starts.
+    clock: transmitter line length relative to nominal (receiver clock error)."""
+    ls = FS * 60.0 / lpm * clock
     freq = [np.full(int(lead * FS), 1900.0)]
     t_tone = np.arange(int(5 * FS)) / FS
     square = lambda f: np.where(np.sin(2 * np.pi * f * t_tone) >= 0, WHITE, BLACK)
@@ -227,8 +267,12 @@ def compare(decoded, img, lpm):
     n = min(len(decoded), len(src))
     if n == 0:
         return 1.0, 0
-    dec = np.array(decoded[:n])
-    return float(np.mean(np.abs(dec[5:n - 5] - src[5:n - 5]))), n
+    # The line that ends phasing is not shown: allow the image to start a
+    # couple of lines late.
+    dec = np.array(decoded)
+    best = min(float(np.mean(np.abs(dec[5:m - 5] - src[5 + k:m - 5 + k])))
+               for k in range(3) for m in [min(len(dec), len(src) - k)])
+    return best, len(decoded)
 
 
 def run_case(name, lpm=120, ioc=576, lines=120, **kw):
@@ -253,10 +297,14 @@ def selftest():
         ('120 lpm, mistuned +40 Hz', {'mistune': 40.0}, 0.08),
         ('60 lpm', {'lpm': 60, 'lines': 60}, 0.05),
         ('IOC 288', {'ioc': 288}, 0.05),
+        ('relogio +0,4 %', {'clock': 1.004}, 0.06),
+        ('relogio -0,4 %', {'clock': 0.996}, 0.06),
+        ('relogio +0,15 %, 10 dB', {'clock': 1.0015, 'snr_db': 10.0}, 0.10),
     ]:
         fax, err, n = run_case(name, **kw)
         lines = kw.get('lines', 120)
-        ok &= err <= max_err and abs(n - lines) <= 1 and fax.events[-1][0] == 'stop'
+        # n includes the ~1.5 s of stop tone before it is recognised.
+        ok &= err <= max_err and lines - 2 <= n <= lines + 4 and fax.events[-1][0] == 'stop'
     # Noise only: must not start.
     rng = np.random.default_rng(7)
     fax = Fax()

@@ -27,17 +27,25 @@ constexpr float TONE_TOL = 0.3f;                 // half-period tolerance
 constexpr float TONE_GOOD = 0.8f;                // share of regular half periods
 
 // Phasing lines: black with a white pulse 5% of the line long, centred on the
-// line start.
+// line start. With the transmitter's line rate slightly off ours (sample clock
+// error: easily 0.1..0.5% with the internal ADC) the pulse drifts from line to
+// line: a straight-line fit of its position gives both the true line length
+// (slant) and the line start.
 constexpr int PULSE = W / 20;
 constexpr float PULSE_CONTRAST = 0.3f;
-constexpr int PHASE_AGREE = 8;                   // consecutive lines that agree...
-constexpr int PHASE_TOL = W / 100;               // ...to within 1% of a line
-constexpr int PHASE_MAX_LINES = 70;              // give up (and skip) after this
+constexpr int PHASE_TOL = W / 100;               // leftover phasing line: pulse within 1%
+constexpr int PH_MIN = 12, PH_MAX = 64;          // pulses to fit
+constexpr int PH_END_MISSES = 1;                 // lines without pulse: phasing over
+constexpr float PH_OUTLIER = 6.0f, PH_RMS = 3.0f;    // px
+constexpr float SLANT_MAX = 0.02f;               // line length within 2% of nominal
+constexpr int PHASE_MAX_LINES = 80;              // give up (and skip) after this
 constexpr float PHASE_FLAT = 0.15f;              // std. deviation outside the pulse
 
 volatile bool req_start = false, req_stop = false;
 int lpm = FAX_DEFAULT_LPM, ioc = FAX_DEFAULT_IOC;
 bool auto_start = true;
+float rate = FS;               // measured sample rate
+float slant = 1.0f;            // line length correction from the phasing fit
 
 FaxState state = FAX_IDLE;
 uint32_t web_id = 0;           // web_image_* id of the current image
@@ -49,13 +57,19 @@ int acc_n = 0;
 float line[W];
 int lines = 0;                 // lines since the start (phasing included)
 int image_lines = 0;           // lines sent to the page
-int centres[PHASE_AGREE];
-int n_centres = 0;
+float ph_k[PH_MAX], ph_u[PH_MAX];    // line number, unwrapped pulse column
+int n_ph = 0, ph_misses = 0;
+int ph_last = 0;                     // last pulse column (wrapped)
 
 // Tone detector
 bool hi = false;
 int since_edge = 0, win_n = 0, edges = 0, good_start = 0, good_stop = 0;
 int start_run = 0, stop_run = 0;
+
+float nominal_line()
+{
+    return rate * 60.0f / lpm * (1.0f + FAX_CLOCK_PPM * 1e-6f) * slant;
+}
 
 float start_tone_hz()
 {
@@ -81,13 +95,14 @@ void begin_image(bool phasing)
     char title[32];
     snprintf(title, sizeof(title), "FAX %d lpm IOC %d", lpm, ioc);
     web_id = web_image_begin(title, W, 1, W / ((float)M_PI * ioc));
-    line_samples = FS * 60.0f / lpm * (1.0f + FAX_CLOCK_PPM * 1e-6f);
+    slant = 1.0f;
+    line_samples = nominal_line();
     pos = 0.0f;
     col = 0;
     acc = 0.0f;
     acc_n = 0;
     lines = image_lines = 0;
-    n_centres = 0;
+    n_ph = ph_misses = 0;
     state = phasing ? FAX_PHASING : FAX_RECEIVING;
 }
 
@@ -155,29 +170,99 @@ void send_line()
     image_lines++;
 }
 
+// Least-squares line u = a + s*k through the phasing pulses, twice dropping
+// points further than PH_OUTLIER from it. False when it does not fit.
+bool phase_fit(float &a, float &s)
+{
+    bool use[PH_MAX];
+    for (int i = 0; i < n_ph; i++)
+        use[i] = true;
+    for (int iter = 0; iter < 3; iter++) {
+        double n = 0, sk = 0, su = 0, skk = 0, sku = 0;
+        for (int i = 0; i < n_ph; i++) {
+            if (!use[i])
+                continue;
+            n++;
+            sk += ph_k[i];
+            su += ph_u[i];
+            skk += (double)ph_k[i] * ph_k[i];
+            sku += (double)ph_k[i] * ph_u[i];
+        }
+        const double den = n * skk - sk * sk;
+        if (n < PH_MIN || den <= 0.0)
+            return false;
+        s = (float)((n * sku - sk * su) / den);
+        a = (float)((su - s * sk) / n);
+        double r2 = 0;
+        for (int i = 0; i < n_ph; i++) {
+            const float r = ph_u[i] - (a + s * ph_k[i]);
+            if (use[i])
+                r2 += r * r;
+            if (iter < 2)
+                use[i] = fabsf(r) <= PH_OUTLIER;
+        }
+        if (iter == 2)
+            return sqrt(r2 / n) <= PH_RMS && fabsf(s) <= SLANT_MAX * W;
+    }
+    return false;
+}
+
+// Phasing line ended: collect its pulse; once phasing is over, correct the
+// line length and move the line start onto the pulse.
+void phasing_line()
+{
+    const int c = pulse_centre();
+    float u = (float)c;
+    if (c >= 0 && n_ph) {
+        int d = c - ph_last;
+        if (d > W / 2)
+            d -= W;
+        else if (d < -W / 2)
+            d += W;
+        u = ph_u[n_ph - 1] + d;
+    }
+    // Once the drift is known, a "pulse" off the line is image content (the
+    // phasing is over), not a phasing pulse.
+    float a, s;
+    if (c >= 0 && n_ph >= PH_MIN && phase_fit(a, s) && fabsf(u - (a + s * lines)) > 2.0f * PH_OUTLIER)
+        u = -1e9f;
+    if (c >= 0 && u > -1e8f) {
+        ph_last = c;
+        if (n_ph < PH_MAX) {
+            ph_k[n_ph] = (float)lines;
+            ph_u[n_ph] = u;
+            n_ph++;
+        }
+        ph_misses = 0;
+    } else {
+        ph_misses++;
+    }
+    const bool over = (n_ph >= PH_MIN && ph_misses >= PH_END_MISSES) || n_ph >= PH_MAX ||
+                      lines >= PHASE_MAX_LINES;
+    if (!over)
+        return;
+    if (phase_fit(a, s)) {
+        // Pulse column in the next line, at the line length used so far.
+        float p = fmodf(a + s * (lines + 1), (float)W);
+        if (p < 0.0f)
+            p += W;
+        pos -= p * line_samples / W;
+        slant *= 1.0f + s / W;
+        line_samples = nominal_line();
+        if (pos >= 0.0f)
+            pos -= line_samples;
+    }
+    state = FAX_RECEIVING;    // without a fit: keep the line start as is
+}
+
 void end_of_line()
 {
     lines++;
     if (state == FAX_PHASING) {
-        const int c = pulse_centre();
-        if (c < 0) {
-            n_centres = 0;
-        } else {
-            if (n_centres > 0 && circ_dist(c, centres[n_centres - 1]) > PHASE_TOL)
-                n_centres = 0;
-            centres[n_centres++] = c;
-        }
-        if (n_centres == PHASE_AGREE) {
-            // Delay the line start to the pulse centre: the next line begins there.
-            pos -= c * line_samples / W;
-            if (pos >= 0.0f)
-                pos -= line_samples;
-            state = FAX_RECEIVING;
-        } else if (lines >= PHASE_MAX_LINES) {
-            state = FAX_RECEIVING;    // no phasing seen: keep the line start as is
-        }
+        phasing_line();
         return;
     }
+    line_samples = nominal_line();
     if (lines < PHASE_MAX_LINES && looks_like_phasing())
         return;
     send_line();
@@ -266,6 +351,12 @@ void fax_set_ioc(int v)
 void fax_set_auto(bool on)
 {
     auto_start = on;
+}
+
+void fax_set_sample_rate(float hz)
+{
+    if (hz > 0.99f * FS && hz < 1.01f * FS)
+        rate = hz;
 }
 
 void fax_request_start()

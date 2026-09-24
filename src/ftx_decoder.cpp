@@ -6,6 +6,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/idf_additions.h"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 
@@ -60,7 +62,9 @@ void ftx_init()
     queue = xQueueCreate(2, sizeof(Slot));
     // Core 0 (with Wi-Fi and the web server), low priority: a slot takes up
     // to a few hundred ms to decode and has a whole slot to finish.
-    xTaskCreatePinnedToCore(decode_task, "ftx_decode", FTX_TASK_STACK, nullptr, 1, nullptr, 0);
+    // Stack in PSRAM: internal RAM is needed by Wi-Fi and the web server.
+    xTaskCreatePinnedToCoreWithCaps(decode_task, "ftx_decode", FTX_TASK_STACK, nullptr, 1, nullptr, 0,
+                                    MALLOC_CAP_SPIRAM);
 }
 
 bool ftx_time_ok()

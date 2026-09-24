@@ -13,6 +13,9 @@ void fax_init();
 void fax_set_lpm(int lpm);        // 60, 90, 120 or 240 lines per minute
 void fax_set_ioc(int ioc);        // 576 or 288
 void fax_set_auto(bool on);       // start on the APT tone
+// Measured DSP sample rate (Hz): the ADC does not run at exactly the nominal
+// rate, and 0.1% is already a visible slant. Applied from the next line on.
+void fax_set_sample_rate(float hz);
 
 // Requests from other tasks, applied on the next fax_process().
 void fax_request_start();         // start receiving now, without phasing
