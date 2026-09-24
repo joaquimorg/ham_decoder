@@ -3,11 +3,9 @@
 #include "sdkconfig.h"
 
 // RX Analyzer - hardware configuration
-// Targets: ESP32-S2 Mini (initial test) and ESP32-S3 (final).
+// Target: ESP32-S3 DevKitC-1 N16R8 (PSRAM needed for FAX/SSTV/FT8).
 
-#if CONFIG_IDF_TARGET_ESP32S2
-#define BOARD_NAME      "ESP32-S2 Mini"
-#elif CONFIG_IDF_TARGET_ESP32S3
+#if CONFIG_IDF_TARGET_ESP32S3
 #define BOARD_NAME      "ESP32-S3"
 #else
 #error "Unsupported target: add it in config.h"

@@ -66,7 +66,7 @@ void audio_source_init()
     // PCM1808 slave: MCLK = 256 fs, BCK = 64 fs (32-bit slots).
     clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
 #if SOC_I2S_SUPPORTS_APLL
-    // ESP32-S2 has an audio PLL: exact 12.288 MHz instead of a fractional divide.
+    // Targets with an audio PLL: exact 12.288 MHz instead of a fractional divide.
     clk_cfg.clk_src = I2S_CLK_SRC_APLL;
 #endif
 

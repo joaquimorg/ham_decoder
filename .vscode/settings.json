@@ -3,12 +3,18 @@
   "idf.portWin": "COM12",
   "idf.flashType": "UART",
   "idf.customExtraVars": {
-    "IDF_TARGET": "esp32s2"
+    "OPENOCD_SCRIPTS": "D:\\Tools\\esp-idf\\.espressif\\tools\\openocd-esp32\\v0.11.0-esp32-20220411/openocd-esp32/share/openocd/scripts",
+    "IDF_CCACHE_ENABLE": "1",
+    "IDF_TARGET": "esp32s3",
+    "OPENOCD_USB_ADAPTER_LOCATION": "1-1"
   },
   "clangd.path": "C:\\Espressif\\tools\\esp-clang\\esp-19.1.2_20250312\\esp-clang\\bin\\clangd.exe",
   "clangd.arguments": [
     "--background-index",
     "--query-driver=**",
     "--compile-commands-dir=d:\\Work\\esp32\\ham_decoder\\build"
+  ],
+  "idf.openOcdConfigs": [
+    "board/esp32s3-builtin.cfg"
   ]
 }

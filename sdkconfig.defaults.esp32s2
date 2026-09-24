@@ -1,2 +1,0 @@
-# ESP32-S2 Mini has no USB-UART bridge: route console/logs to native USB CDC.
-CONFIG_ESP_CONSOLE_USB_CDC=y

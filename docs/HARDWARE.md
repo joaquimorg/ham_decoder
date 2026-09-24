@@ -21,7 +21,7 @@ Fonte por omissão (`AUDIO_SOURCE AUDIO_SRC_ADC`). Com a gravação W1AW a 30 wp
 - A entrada máxima é de **~2,8 Vpp** antes de cortar. Para saídas de auscultadores de rádio, começa com o volume baixo.
 - Amostragem a 48 kHz por DMA, com decimação ×4 para 12 kHz.
 - Tem ~60 dB de gama dinâmica útil (12 bits). Chega para validar a ideia.
-- Usar só pinos do ADC1 (GPIO1..10 no S2 e no S3). O ADC2 é partilhado com o Wi-Fi.
+- Usar só pinos do ADC1 (GPIO1..10 no S3). O ADC2 é partilhado com o Wi-Fi.
 
 O pino e a atenuação estão em `include/config.h` (`ADC_INPUT_GPIO`, `ADC_INPUT_ATTEN`).
 
@@ -80,10 +80,6 @@ Com as portas USB viradas para baixo, o PCM1808 liga ao header **J1** (lado esqu
 | 38 ou 48 | LED RGB da placa (38 na v1.1, 48 na v1.0) |
 
 Livres e seguros para expansão futura (display, botões, etc.): 2, 7, 9..18, 21, 39..42, 47. Ocupados pela entrada de áudio: 4, 5, 6 e 8 (PCM1808) e 1 (ADC interno).
-
-## ESP32-S2 Mini
-
-Usa os mesmos GPIOs: 8, 4, 6 e 5 para o PCM1808 e 1 (ADC1_CH0) para o ADC interno.
 
 ## Entrada de áudio no equipamento final
 
