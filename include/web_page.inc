@@ -74,6 +74,18 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .seg button.on.manual { background: var(--manual); }
 .val { font: 13px var(--mono); color: var(--muted); min-width: 60px; }
 .note { font-size: 13px; color: var(--muted); }
+.ftx { max-height: 420px; overflow-y: auto; background: var(--panel2); border-radius: 8px; }
+.ftx table { width: 100%; border-collapse: collapse; font: 14px/1.5 var(--mono); }
+.ftx th { position: sticky; top: 0; background: var(--panel2); color: var(--muted); font-weight: 600;
+          text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.ftx td { padding: 3px 10px; white-space: nowrap; }
+.ftx td.n { text-align: right; color: var(--muted); }
+.ftx tr.cq td.msg { color: var(--accent); }
+.ftx tr.new td { animation: flash 2s; }
+@keyframes flash { from { background: rgba(88,166,255,.25); } to { background: transparent; } }
+.imgbox { max-height: 75vh; overflow-y: auto; background: #000; border-radius: 6px; }
+#img { image-rendering: auto; border-radius: 0; }
+#img[hidden] { display: none; }
 @media (max-width: 900px) {
   .status { grid-template-columns: repeat(2, 1fr); }
   .metric.label { grid-column: 1 / -1; }
@@ -143,6 +155,41 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     <pre class="decoded" id="rtext"></pre>
   </section>
 
+  <section class="card">
+    <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+      <h2 style="margin: 0">FT8 / FT4</h2>
+      <div class="row">
+        <select id="ftxMode">
+          <option value="0">Desligado</option>
+          <option value="1">FT8</option>
+          <option value="2">FT4</option>
+        </select>
+        <button id="ftxClear">Limpar</button>
+      </div>
+    </div>
+    <div class="note" id="ftxInfo" style="margin-bottom: 8px">-</div>
+    <div class="ftx">
+      <table>
+        <thead><tr><th>UTC</th><th>dB</th><th>DT</th><th>Hz</th><th>Mensagem</th></tr></thead>
+        <tbody id="ftxRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+      <h2 style="margin: 0">Imagem (FAX / SSTV)</h2>
+      <div class="row">
+        <button id="faxStart">Iniciar FAX agora</button>
+        <button id="imgStop">Parar</button>
+        <button id="imgSave">Guardar PNG</button>
+        <button id="imgClear">Limpar</button>
+      </div>
+    </div>
+    <div class="note" id="imgInfo" style="margin-bottom: 8px">Sem imagem.</div>
+    <div class="imgbox"><canvas id="img" hidden></canvas></div>
+  </section>
+
   <div class="grid2">
     <section class="card">
       <h2>Descodificador CW</h2>
@@ -181,6 +228,31 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
         </select>
       </div>
       <div class="note" style="margin-top: 8px">Os tons são detetados automaticamente (desvios de 170 a 850 Hz). Em automático, a marca é o tom que domina no tempo.</div>
+    </section>
+
+    <section class="card">
+      <h2>Descodificador FAX</h2>
+      <div class="row">
+        <label for="faxLpm" style="min-width: 90px">Velocidade</label>
+        <select id="faxLpm">
+          <option value="60">60 linhas/min</option>
+          <option value="90">90 linhas/min</option>
+          <option value="120">120 linhas/min</option>
+          <option value="240">240 linhas/min</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="faxIoc" style="min-width: 90px">IOC</label>
+        <select id="faxIoc">
+          <option value="576">576</option>
+          <option value="288">288</option>
+        </select>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" id="faxAuto"> Começar sozinho com o tom de início</label>
+      </div>
+      <div class="note" style="margin-top: 8px">Sintoniza em USB com a portadora 1,9 kHz abaixo da frequência publicada (1500 Hz = preto, 2300 Hz = branco). A meio de uma emissão, usa «Iniciar FAX agora».</div>
+      <div class="note" style="margin-top: 8px">SSTV (Martin, Scottie, Robot, PD) começa sozinho com o cabeçalho VIS; não precisa de configuração.</div>
     </section>
 
     <section class="card">
@@ -314,11 +386,13 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     place($('mSpace'), rtty.space);
   }
 
+  const MAX_LINES = 30;    // older lines of decoded text are dropped
   function appendText(id, add) {
     if (!add) return;
     const el = $(id);
     const atEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 8;
-    el.textContent = (el.textContent + add).slice(-6000);
+    const lines = (el.textContent + add).slice(-6000).split('\n');
+    el.textContent = lines.slice(-MAX_LINES).join('\n');
     if (atEnd) el.scrollTop = el.scrollHeight;
   }
 
@@ -354,6 +428,13 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       ? `${d.rtty_mark.toFixed(0)}/${d.rtty_space.toFixed(0)}${d.rtty_on ? '' : ' (silêncio)'}` : '-';
     if (document.activeElement !== $('baud')) $('baud').value = String(+d.rtty_baud.toFixed(2));
     if (document.activeElement !== $('pol')) $('pol').value = String(d.rtty_pol);
+    if (document.activeElement !== $('faxLpm')) $('faxLpm').value = String(d.fax_lpm);
+    if (document.activeElement !== $('faxIoc')) $('faxIoc').value = String(d.fax_ioc);
+    $('faxAuto').checked = d.fax_auto;
+    showFtx(d);
+    faxState = d.fax_state;
+    sstv = d.sstv_rx ? `a receber ${d.sstv_mode}` : 'à espera do cabeçalho VIS';
+    showImgInfo();
 
     $('label').textContent = d.label || '-';
     $('ml').textContent = d.ml ? d.ml + ' ' + Math.round(d.ml_p * 100) + '%' : '-';
@@ -493,6 +574,146 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   $('baud').onchange = () => postConfig({ rtty_baud: $('baud').value });
   $('pol').onchange = () => postConfig({ rtty_pol: $('pol').value });
 
+  // Image (FAX): lines fetched from /api/img while the tab is visible, and
+  // accumulated in the canvas (one canvas row per line; the CSS aspect ratio
+  // gives the lines their real height).
+  const imgCv = $('img'), imgCtx = imgCv.getContext('2d');
+  const img = { id: 0, next: 0, base: 0, w: 0, ch: 1, aspect: 1, total: 0, active: false, title: '' };
+  let faxState = 0, sstv = '';
+
+  function showImgInfo() {
+    const fax = ['à espera do tom de início', 'a alinhar (linhas de fase)', 'a receber'][faxState] || '';
+    const cur = img.id ? `${img.title} · ${img.total} linhas${img.active ? '' : ' · terminada'}` : 'Sem imagem';
+    $('imgInfo').textContent = `${cur} · FAX: ${fax} · SSTV: ${sstv}`;
+  }
+
+  function imgResize(h) {
+    if (imgCv.height === h && imgCv.width === img.w) return;
+    const old = document.createElement('canvas');
+    old.width = imgCv.width; old.height = imgCv.height;
+    if (imgCv.width === img.w && imgCv.height) old.getContext('2d').drawImage(imgCv, 0, 0);
+    imgCv.width = img.w; imgCv.height = h;
+    if (old.width === img.w && old.height) imgCtx.drawImage(old, 0, 0);
+    imgCv.style.aspectRatio = `${img.w} / ${Math.max(1, h * img.aspect)}`;
+    imgCv.hidden = !h;
+  }
+
+  // Returns true when the board holds more lines than this reply carried.
+  function imgData(buf) {
+    if (buf.byteLength < 52) return false;
+    const dv = new DataView(buf);
+    const id = dv.getUint32(0, true), first = dv.getUint32(4, true);
+    img.total = dv.getUint32(8, true);
+    img.active = !!dv.getUint8(15);
+    if (!id) { showImgInfo(); return false; }
+    if (id !== img.id) {
+      img.id = id; img.base = first; img.next = first;
+      img.w = dv.getUint16(12, true); img.ch = dv.getUint8(14); img.aspect = dv.getFloat32(16, true);
+      img.title = new TextDecoder().decode(new Uint8Array(buf, 20, 32)).replace(/\0[\s\S]*$/, '');
+      imgResize(0);
+    }
+    const bytes = img.w * img.ch, n = Math.floor((buf.byteLength - 52) / bytes);
+    if (n > 0) {
+      const row0 = first - img.base;
+      const px = new Uint8Array(buf, 52, n * bytes), out = imgCtx.createImageData(img.w, n);
+      imgResize(Math.max(imgCv.height, row0 + n));
+      for (let i = 0, o = 0; i < n * img.w; i++, o += 4) {
+        if (img.ch === 3) { out.data[o] = px[i * 3]; out.data[o + 1] = px[i * 3 + 1]; out.data[o + 2] = px[i * 3 + 2]; }
+        else out.data[o] = out.data[o + 1] = out.data[o + 2] = px[i];
+        out.data[o + 3] = 255;
+      }
+      imgCtx.putImageData(out, 0, row0);
+      img.next = first + n;
+    }
+    showImgInfo();
+    return img.next < img.total;
+  }
+
+  async function pollImg() {
+    let again = 1000;
+    if (!document.hidden) {
+      const ctl = new AbortController();
+      const guard = setTimeout(() => ctl.abort(), 8000);
+      try {
+        const res = await fetch(`/api/img?i=${img.id}&l=${img.next}`, { cache: 'no-store', signal: ctl.signal });
+        if (imgData(await res.arrayBuffer())) again = 50;
+      } catch (e) { again = 3000; }
+      clearTimeout(guard);
+    }
+    setTimeout(pollImg, again);
+  }
+
+  // FT8/FT4: messages fetched from /api/ftx, newest on top.
+  const FTX_ROWS = 200;
+  let ftxSeq = 0, ftxMode = 0, lastTimeSend = 0;
+
+  function showFtx(d) {
+    ftxMode = d.ftx_mode;
+    if (document.activeElement !== $('ftxMode')) $('ftxMode').value = String(d.ftx_mode);
+    let info;
+    if (!d.ftx_mode) info = 'Desligado.';
+    else if (!d.ftx_time) {
+      info = 'À espera da hora UTC (NTP)…';
+      // Without internet (access point) the board takes this browser's clock.
+      if (Date.now() - lastTimeSend > 30000) { lastTimeSend = Date.now(); postConfig({ utc_ms: Date.now() }); }
+    } else {
+      const skew = d.utc - Date.now() / 1000;
+      info = d.ftx_n < 0 ? 'A recolher o primeiro período…'
+        : `Último período: ${d.ftx_n} mensagens, descodificadas em ${d.ftx_ms} ms`;
+      if (d.ftx_lost) info += ` · ${d.ftx_lost} períodos perdidos`;
+      if (Math.abs(skew) > 2) info += ` · relógio da placa ${skew > 0 ? '+' : ''}${skew.toFixed(0)} s em relação a este computador`;
+    }
+    $('ftxInfo').textContent = info;
+  }
+
+  function ftxRow(m) {
+    const [slot, snr, dt, hz, text] = m;
+    const tr = document.createElement('tr');
+    const t = new Date(slot * 1000).toISOString().slice(11, 19);
+    tr.className = 'new' + (/^CQ\b/.test(text) ? ' cq' : '');
+    for (const [v, cls] of [[t, ''], [snr, 'n'], [dt.toFixed(1), 'n'], [hz, 'n'], [text, 'msg']]) {
+      const td = document.createElement('td'); td.textContent = v; if (cls) td.className = cls; tr.appendChild(td);
+    }
+    return tr;
+  }
+
+  async function pollFtx() {
+    let again = 2000;
+    if (!document.hidden && ftxMode) {
+      const ctl = new AbortController();
+      const guard = setTimeout(() => ctl.abort(), 5000);
+      try {
+        const res = await fetch(`/api/ftx?s=${ftxSeq}`, { cache: 'no-store', signal: ctl.signal });
+        const d = await res.json();
+        const body = $('ftxRows');
+        for (const m of d.m) body.insertBefore(ftxRow(m), body.firstChild);
+        while (body.children.length > FTX_ROWS) body.lastChild.remove();
+        ftxSeq = d.s;
+      } catch (e) { again = 5000; }
+      clearTimeout(guard);
+    }
+    setTimeout(pollFtx, again);
+  }
+
+  $('ftxMode').onchange = () => { ftxMode = +$('ftxMode').value; postConfig({ ftx_mode: $('ftxMode').value }); };
+  $('ftxClear').onclick = () => { $('ftxRows').innerHTML = ''; };
+
+  $('faxStart').onclick = () => postConfig({ fax_start: 1 });
+  $('imgStop').onclick = () => postConfig({ img_stop: 1 });
+  $('imgClear').onclick = () => { img.base = img.next; imgResize(0); };
+  $('imgSave').onclick = () => {
+    if (!imgCv.height) return;
+    const c = document.createElement('canvas');    // lines at their real height
+    c.width = img.w; c.height = Math.max(1, Math.round(imgCv.height * img.aspect));
+    c.getContext('2d').drawImage(imgCv, 0, 0, c.width, c.height);
+    const a = document.createElement('a');
+    a.download = `${img.title.replace(/[^\w-]+/g, '_')}_${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '')}.png`;
+    a.href = c.toDataURL('image/png'); a.click();
+  };
+  $('faxLpm').onchange = () => postConfig({ fax_lpm: $('faxLpm').value });
+  $('faxIoc').onchange = () => postConfig({ fax_ioc: $('faxIoc').value });
+  $('faxAuto').onchange = () => postConfig({ fax_auto: $('faxAuto').checked ? 1 : 0 });
+
   $('wifi').onsubmit = async ev => {
     ev.preventDefault();
     $('wifiMsg').textContent = 'a guardar...';
@@ -504,6 +725,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 
   window.addEventListener('resize', drawSpectrum);
   connectWs();
+  pollImg();
+  pollFtx();
 })();
 </script>
 </body>

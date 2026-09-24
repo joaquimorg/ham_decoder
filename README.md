@@ -39,9 +39,10 @@ Máximo ~2,8 Vpp na entrada. Esquema, a ligação do PCM1808 e os GPIOs a evitar
 3. calcula FFT, ruído de fundo e picos;
 4. classifica o sinal (ruído, tom, CW, FSK/RTTY, voz);
 5. descodifica CW (Morse) no tom detetado e RTTY (Baudot, 45,45/50/75 baud) nos dois tons FSK detetados;
-6. escreve no monitor série o texto CW e as mudanças de sinal; com `SERIAL_REPORT 2` em `config.h`, escreve também a linha completa do waterfall em texto a cada segundo;
-7. classifica o sinal também com um modelo **TinyML** (rede MLP int8, ver abaixo);
-8. serve uma **página web** por Wi-Fi com espectro, waterfall, classificação, texto CW e configuração.
+6. descodifica imagens **FAX** (WEFAX 60/90/120/240 lpm, IOC 576/288) e **SSTV** (Martin, Scottie, Robot, PD), e mensagens **FT8/FT4** (com a biblioteca [ft8_lib](components/ft8_lib/README.md));
+7. escreve no monitor série o texto CW e as mudanças de sinal; com `SERIAL_REPORT 2` em `config.h`, escreve também a linha completa do waterfall em texto a cada segundo;
+8. classifica o sinal também com um modelo **TinyML** (rede MLP int8, ver abaixo);
+9. serve uma **página web** por Wi-Fi com espectro, waterfall, classificação, texto CW/RTTY, imagens FAX/SSTV, mensagens FT8/FT4 e configuração.
 
 ## Interface web
 
@@ -56,7 +57,9 @@ Na página:
 - **Tom do descodificador CW:** fica em automático, ou fixa-se em manual clicando no waterfall ou escrevendo a frequência.
 - **Sensibilidade (contraste mínimo):** as definições de CW e de Wi-Fi ficam guardadas na placa (NVS).
 - **Cores do waterfall:** ficam guardadas no browser.
-- **Texto CW:** com botões para copiar e limpar.
+- **Texto CW e RTTY:** com botões para copiar e limpar. Ficam as últimas 30 linhas.
+- **FT8 / FT4:** escolhe o modo; aparece uma tabela com hora UTC, SNR (dB em 2500 Hz, como o WSJT-X), DT, frequência e mensagem. A hora vem por NTP (`pool.ntp.org`). No ponto de acesso, sem internet, a placa usa a hora do browser.
+- **Imagem (FAX / SSTV):** o SSTV começa sozinho com o cabeçalho VIS. O FAX começa com o tom de início, alinha-se pelas linhas de fase e pára com o tom de fim; «Iniciar FAX agora» apanha uma emissão a meio. «Guardar PNG» grava a imagem com a proporção certa.
 
 Em alternativa, a rede pode vir já no firmware: copia `include/wifi_secrets.h.example` para `include/wifi_secrets.h`, que é ignorado pelo git.
 
@@ -148,6 +151,14 @@ python tools/ml/classify_wav.py gravacao.wav     # testa o modelo num WAV
 Para juntar exemplos reais: `ML_LOG_FEATURES 1` e `ML_LOG_LABEL "CW"` em `config.h`, gravar o monitor com o rádio nesse modo, e depois
 `python tools/ml/log_to_npz.py logs/<ficheiro>.log -o real_cw.npz` e `python tools/ml/train.py --extra real_cw.npz`.
 
+### V0.8 - FAX, SSTV, FT8/FT4
+- [x] discriminador FM partilhado (`src/fm_demod.cpp`)
+- [x] FAX: tons APT de início/fim, alinhamento pelas linhas de fase, 60/90/120/240 lpm, IOC 576/288
+- [x] SSTV: cabeçalho VIS, Martin M1/M2, Scottie S1/S2/DX, Robot 36/72, PD50/90/120/160/180/240, correção de inclinação pelos sincronismos
+- [x] FT8/FT4 com a ft8_lib (espectrograma na tarefa de análise, descodificação numa tarefa no core 0), hora por NTP
+- [x] validação no PC: `tools/fax_sim.py`, `tools/sstv_sim.py`, `tools/ftx_test/`
+- [ ] validar com sinais reais do rádio
+
 ### V0.7 - SD Card
 - [ ] gravação de amostras
 - [ ] configuração
@@ -175,9 +186,16 @@ rx_analyzer/
 │   ├── analyzer.h
 │   ├── cw_decoder.h
 │   ├── rtty_decoder.h
+│   ├── fm_demod.h
+│   ├── fax_decoder.h
+│   ├── sstv_decoder.h
+│   ├── ftx_core.h
+│   ├── ftx_decoder.h
 │   ├── settings.h
 │   ├── web_ui.h
 │   └── web_page.inc     (página web embutida)
+├── components/
+│   └── ft8_lib/         (biblioteca FT8/FT4, MIT)
 ├── src/
 │   ├── main.cpp
 │   ├── pcm1808_source.cpp
@@ -185,12 +203,20 @@ rx_analyzer/
 │   ├── analyzer.cpp
 │   ├── cw_decoder.cpp
 │   ├── rtty_decoder.cpp
+│   ├── fm_demod.cpp     (discriminador FM para FAX e SSTV)
+│   ├── fax_decoder.cpp
+│   ├── sstv_decoder.cpp
+│   ├── ftx_core.cpp     (FT8/FT4: períodos e descodificação, sem ESP-IDF)
+│   ├── ftx_decoder.cpp  (FT8/FT4 na placa: hora UTC e tarefa de descodificação)
 │   ├── capture.cpp
 │   ├── settings.cpp     (definições em NVS)
 │   └── web_ui.cpp       (Wi-Fi + servidor HTTP)
 ├── tools/
 │   ├── cw_sim.py        (simulação do decoder CW no PC)
 │   ├── rtty_sim.py      (simulação do decoder RTTY e gerador de WAV de teste)
+│   ├── fax_sim.py       (simulação do decoder FAX e gerador de WAV de teste)
+│   ├── sstv_sim.py      (simulação do decoder SSTV e gerador de WAV de teste)
+│   ├── ftx_test/        (teste do FT8/FT4 no PC, em C++)
 │   └── capture_to_wav.py
 └── docs/
     ├── ROADMAP.md

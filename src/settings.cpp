@@ -30,6 +30,10 @@ static void set_defaults()
     g_settings.cw_min_contrast = CW_MIN_CONTRAST;
     g_settings.rtty_baud = RTTY_DEFAULT_BAUD;
     g_settings.rtty_polarity = 0;
+    g_settings.fax_lpm = FAX_DEFAULT_LPM;
+    g_settings.fax_ioc = FAX_DEFAULT_IOC;
+    g_settings.fax_auto = true;
+    g_settings.ftx_mode = 0;
     strlcpy(g_settings.wifi_ssid, WIFI_SSID, sizeof(g_settings.wifi_ssid));
     strlcpy(g_settings.wifi_pass, WIFI_PASS, sizeof(g_settings.wifi_pass));
 }
@@ -62,6 +66,14 @@ void settings_init()
         g_settings.rtty_baud = u32 / 100.0f;
     if (nvs_get_u8(h, "rt_pol", &u8) == ESP_OK && u8 <= 2)
         g_settings.rtty_polarity = u8;
+    if (nvs_get_u32(h, "fax_lpm", &u32) == ESP_OK && (u32 == 60 || u32 == 90 || u32 == 120 || u32 == 240))
+        g_settings.fax_lpm = u32;
+    if (nvs_get_u32(h, "fax_ioc", &u32) == ESP_OK && (u32 == 288 || u32 == 576))
+        g_settings.fax_ioc = u32;
+    if (nvs_get_u8(h, "fax_auto", &u8) == ESP_OK)
+        g_settings.fax_auto = u8 != 0;
+    if (nvs_get_u8(h, "ftx_mode", &u8) == ESP_OK && u8 <= 2)
+        g_settings.ftx_mode = u8;
     len = sizeof(g_settings.wifi_ssid);
     nvs_get_str(h, "ssid", g_settings.wifi_ssid, &len);
     len = sizeof(g_settings.wifi_pass);
@@ -102,6 +114,10 @@ void settings_save()
     nvs_set_u32(h, "cw_contr", (uint32_t)(g_settings.cw_min_contrast * 100.0f + 0.5f));
     nvs_set_u32(h, "rt_baud", (uint32_t)(g_settings.rtty_baud * 100.0f + 0.5f));
     nvs_set_u8(h, "rt_pol", (uint8_t)g_settings.rtty_polarity);
+    nvs_set_u32(h, "fax_lpm", (uint32_t)g_settings.fax_lpm);
+    nvs_set_u32(h, "fax_ioc", (uint32_t)g_settings.fax_ioc);
+    nvs_set_u8(h, "fax_auto", g_settings.fax_auto ? 1 : 0);
+    nvs_set_u8(h, "ftx_mode", (uint8_t)g_settings.ftx_mode);
     nvs_set_str(h, "ssid", g_settings.wifi_ssid);
     nvs_set_str(h, "pass", g_settings.wifi_pass);
     nvs_commit(h);

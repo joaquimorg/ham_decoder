@@ -17,10 +17,17 @@
 #include "esp_timer.h"
 #include "esp_system.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 
 #include "config.h"
 #include "settings.h"
 #include "cw_decoder.h"
+#include "fax_decoder.h"
+#include "sstv_decoder.h"
+#include "ftx_decoder.h"
+#include "esp_netif_sntp.h"
+#include <sys/time.h>
+#include <time.h>
 
 static const char *TAG = "WEB";
 
@@ -91,6 +98,87 @@ void web_push_text(WebTextChannel ch, const char *text)
     xSemaphoreGive(lock);
 }
 
+// Image lines: a ring in PSRAM when there is some (a whole FAX chart fits), so
+// a page opened mid-image still gets it all; a small one in internal RAM
+// otherwise. `img_id` changes with every new image.
+#define IMG_RING_PSRAM (1536 * 1024)
+#define IMG_RING_RAM   (24 * 1024)
+#define IMG_TITLE      32
+
+static uint8_t *img_ring = nullptr;
+static size_t img_ring_bytes = 0;
+static uint32_t img_id = 0, img_lines = 0, img_cap = 0;
+static uint16_t img_width = 0;
+static uint8_t img_channels = 1;
+static bool img_active = false;
+static float img_aspect = 1.0f;
+static char img_title[IMG_TITLE] = "";
+
+static void image_alloc()
+{
+    img_ring = (uint8_t *)heap_caps_malloc(IMG_RING_PSRAM, MALLOC_CAP_SPIRAM);
+    img_ring_bytes = IMG_RING_PSRAM;
+    if (!img_ring) {
+        img_ring = (uint8_t *)malloc(IMG_RING_RAM);
+        img_ring_bytes = img_ring ? IMG_RING_RAM : 0;
+    }
+    ESP_LOGI(TAG, "imagem: %u KB", (unsigned)(img_ring_bytes / 1024));
+}
+
+uint32_t web_image_begin(const char *title, int width, int channels, float aspect)
+{
+    if (!lock || !img_ring || width * channels > WEB_IMG_MAX_LINE)
+        return 0;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    const uint32_t id = ++img_id;
+    img_lines = 0;
+    img_width = width;
+    img_channels = channels;
+    img_cap = img_ring_bytes / (width * channels);
+    img_aspect = aspect;
+    img_active = true;
+    strlcpy(img_title, title, sizeof(img_title));
+    xSemaphoreGive(lock);
+    return id;
+}
+
+void web_image_line(uint32_t id, const uint8_t *px)
+{
+    if (!lock || !img_ring || !id)
+        return;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    if (id == img_id && img_active) {
+        const size_t bytes = img_width * img_channels;
+        memcpy(img_ring + (img_lines % img_cap) * bytes, px, bytes);
+        img_lines++;
+    }
+    xSemaphoreGive(lock);
+}
+
+void web_image_end(uint32_t id)
+{
+    if (!lock)
+        return;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    if (id == img_id)
+        img_active = false;
+    xSemaphoreGive(lock);
+}
+
+// FT8/FT4 messages: ring of the last FTX_RING, numbered by `ftx_seq`.
+#define FTX_RING 64
+static FtxMessage ftx_ring[FTX_RING];
+static uint32_t ftx_seq = 0;
+
+void web_push_ftx(const FtxMessage &m)
+{
+    if (!lock)
+        return;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    ftx_ring[ftx_seq++ % FTX_RING] = m;
+    xSemaphoreGive(lock);
+}
+
 // Copies the characters of ring `t` from sequence `from` on (clamped to what
 // the ring still holds; a new client gets the last 512). Returns the count.
 static int snapshot_text(const TextRing &t, uint32_t from, char *out)
@@ -143,6 +231,11 @@ static void on_wifi_event(void *, esp_event_base_t base, int32_t id, void *data)
         snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ev->ip_info.ip));
         ESP_LOGW(TAG, "ligado a \"%s\": http://%s/", g_settings.wifi_ssid, ip_str);
         xEventGroupSetBits(wifi_events, WIFI_CONNECTED_BIT);
+        static bool sntp_started = false;    // UTC for FT8/FT4
+        if (!sntp_started) {
+            esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG(FTX_NTP_SERVER);
+            sntp_started = esp_netif_sntp_init(&cfg) == ESP_OK;
+        }
     }
 }
 
@@ -380,6 +473,17 @@ static int format_json(bool with_rows, char *json, size_t cap)
     n += snprintf(json + n, cap - n, ",\"source\":\"%s\",\"boot\":",
                   AUDIO_SOURCE == AUDIO_SRC_ADC ? "ADC interno" : "PCM1808");
     n += json_str(json + n, cap - n, boot_reason);
+    n += snprintf(json + n, cap - n,
+                  ",\"fax_lpm\":%d,\"fax_ioc\":%d,\"fax_auto\":%s,\"fax_state\":%d,\"fax_lines\":%d",
+                  g_settings.fax_lpm, g_settings.fax_ioc, g_settings.fax_auto ? "true" : "false",
+                  (int)fax_state(), fax_lines());
+    n += snprintf(json + n, cap - n, ",\"sstv_rx\":%s,\"sstv_lines\":%d,\"sstv_mode\":",
+                  sstv_receiving() ? "true" : "false", sstv_lines());
+    n += json_str(json + n, cap - n, sstv_mode_name());
+    n += snprintf(json + n, cap - n,
+                  ",\"ftx_mode\":%d,\"ftx_time\":%s,\"ftx_n\":%d,\"ftx_ms\":%d,\"ftx_lost\":%d,\"utc\":%lld",
+                  g_settings.ftx_mode, ftx_time_ok() ? "true" : "false", ftx_last_count(), ftx_last_ms(),
+                  ftx_core_skipped(), (long long)time(nullptr));
     n += snprintf(json + n, cap - n, ",\"boot_bad\":%s,\"resets\":%u}",
                   boot_unexpected ? "true" : "false", boot_resets);
     return n;
@@ -411,6 +515,101 @@ static esp_err_t handle_data(httpd_req_t *req)
     if (err != ESP_OK || ms > 500)
         ESP_LOGW(TAG, "/api/data: %d bytes em %lld ms (%s)", n, ms, esp_err_to_name(err));
     return err;
+}
+
+// GET /api/img?i=<image id>&l=<next line>
+// Binary, little endian: u32 id, u32 first line sent, u32 lines in the image,
+// u16 width, u8 channels, u8 receiving, f32 aspect, char title[32], then the
+// lines from `first` on (at most IMG_MAX_SEND). A different id restarts from
+// the oldest line still held.
+#define IMG_MAX_SEND 200
+
+static esp_err_t handle_img(httpd_req_t *req)
+{
+    uint32_t want_id = 0, want_line = 0;
+    char q[48], v[16];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK) {
+        if (httpd_query_key_value(q, "i", v, sizeof(v)) == ESP_OK)
+            want_id = strtoul(v, nullptr, 10);
+        if (httpd_query_key_value(q, "l", v, sizeof(v)) == ESP_OK)
+            want_line = strtoul(v, nullptr, 10);
+    }
+    uint8_t head[20 + IMG_TITLE] = {};
+    xSemaphoreTake(lock, portMAX_DELAY);
+    const uint32_t id = img_id, total = img_lines, cap = img_cap;
+    const size_t bytes = img_width * img_channels;
+    uint32_t first = want_id == id ? want_line : 0;
+    if (first > total)
+        first = 0;
+    if (total - first > cap)
+        first = total - cap;
+    memcpy(head, &id, 4);
+    memcpy(head + 4, &first, 4);
+    memcpy(head + 8, &total, 4);
+    memcpy(head + 12, &img_width, 2);
+    head[14] = img_channels;
+    head[15] = img_active;
+    memcpy(head + 16, &img_aspect, 4);
+    memcpy(head + 20, img_title, IMG_TITLE);
+    xSemaphoreGive(lock);
+
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    esp_err_t err = httpd_resp_send_chunk(req, (const char *)head, sizeof(head));
+    // A few lines at a time: copied under the lock, sent without it.
+    static uint8_t buf[2 * WEB_IMG_MAX_LINE];    // HTTP server task only
+    const uint32_t last = total - first > IMG_MAX_SEND ? first + IMG_MAX_SEND : total;
+    const uint32_t per_send = bytes ? sizeof(buf) / bytes : 0;
+    for (uint32_t k = first; k < last && err == ESP_OK;) {
+        const uint32_t n = last - k < per_send ? last - k : per_send;
+        xSemaphoreTake(lock, portMAX_DELAY);
+        const bool held = img_id == id && img_lines - k <= img_cap;
+        if (held)
+            for (uint32_t j = 0; j < n; j++)
+                memcpy(buf + j * bytes, img_ring + ((k + j) % img_cap) * bytes, bytes);
+        xSemaphoreGive(lock);
+        if (!held)
+            break;    // overwritten meanwhile: the client asks again
+        err = httpd_resp_send_chunk(req, (const char *)buf, n * bytes);
+        k += n;
+    }
+    if (err == ESP_OK)
+        err = httpd_resp_send_chunk(req, nullptr, 0);
+    return err;
+}
+
+// GET /api/ftx?s=<next message>
+// {"s":<next>,"m":[[slot start (UTC s), snr, dt, Hz, "text"], ...]}
+static esp_err_t handle_ftx(httpd_req_t *req)
+{
+    uint32_t want = 0;
+    char q[32], v[16];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+        httpd_query_key_value(q, "s", v, sizeof(v)) == ESP_OK)
+        want = strtoul(v, nullptr, 10);
+    static FtxMessage msgs[FTX_RING];    // HTTP server task only
+    xSemaphoreTake(lock, portMAX_DELAY);
+    const uint32_t seq = ftx_seq;
+    if (want > seq || seq - want > FTX_RING)
+        want = seq > FTX_RING ? seq - FTX_RING : 0;
+    const int n = seq - want;
+    for (int i = 0; i < n; i++)
+        msgs[i] = ftx_ring[(want + i) % FTX_RING];
+    xSemaphoreGive(lock);
+
+    static char json[FTX_RING * 96 + 32];
+    int o = snprintf(json, sizeof(json), "{\"s\":%" PRIu32 ",\"m\":[", seq);
+    for (int i = 0; i < n; i++) {
+        const FtxMessage &m = msgs[i];
+        o += snprintf(json + o, sizeof(json) - o, "%s[%lld,%.0f,%.1f,%.0f,", i ? "," : "",
+                      (long long)m.slot_start, m.snr_db, m.dt, m.freq_hz);
+        o += json_str(json + o, sizeof(json) - o, m.text);
+        o += snprintf(json + o, sizeof(json) - o, "]");
+    }
+    o += snprintf(json + o, sizeof(json) - o, "]}");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, json, o);
 }
 
 // ---------------------------------------------------------------------------
@@ -605,6 +804,42 @@ static esp_err_t handle_config(httpd_req_t *req)
         if (p >= 0 && p <= 2)
             g_settings.rtty_polarity = p;
     }
+    if (form_value(body, "fax_lpm", v, sizeof(v))) {
+        const int l = atoi(v);
+        if (l == 60 || l == 90 || l == 120 || l == 240)
+            g_settings.fax_lpm = l;
+    }
+    if (form_value(body, "fax_ioc", v, sizeof(v))) {
+        const int i = atoi(v);
+        if (i == 288 || i == 576)
+            g_settings.fax_ioc = i;
+    }
+    if (form_value(body, "fax_auto", v, sizeof(v)))
+        g_settings.fax_auto = atoi(v) != 0;
+    if (form_value(body, "ftx_mode", v, sizeof(v))) {
+        const int m = atoi(v);
+        if (m >= FTX_OFF && m <= FTX_FT4)
+            g_settings.ftx_mode = m;
+    }
+    // The page's clock (UTC ms) when NTP has not set ours (access point
+    // without internet): FT8/FT4 need the time to within ~1 s.
+    if (form_value(body, "utc_ms", v, sizeof(v)) && !ftx_time_ok()) {
+        const long long ms = strtoll(v, nullptr, 10);
+        struct timeval tv = { (time_t)(ms / 1000), (suseconds_t)(ms % 1000 * 1000) };
+        settimeofday(&tv, nullptr);
+        ESP_LOGW(TAG, "hora UTC recebida da pagina");
+    }
+    ftx_core_set_protocol((FtxProtocol)g_settings.ftx_mode);
+    // One-off actions, not settings.
+    if (form_value(body, "fax_start", v, sizeof(v)))
+        fax_request_start();
+    if (form_value(body, "img_stop", v, sizeof(v))) {
+        fax_request_stop();
+        sstv_request_stop();
+    }
+    fax_set_lpm(g_settings.fax_lpm);
+    fax_set_ioc(g_settings.fax_ioc);
+    fax_set_auto(g_settings.fax_auto);
     cw_set_min_contrast(g_settings.cw_min_contrast);
     settings_save();
     httpd_resp_set_type(req, "application/json");
@@ -674,6 +909,8 @@ static void http_start()
     register_uri("/api/data",   HTTP_GET,  handle_data);
     register_uri("/api/config", HTTP_POST, handle_config);
     register_uri("/api/wifi",   HTTP_POST, handle_wifi);
+    register_uri("/api/img",    HTTP_GET,  handle_img);
+    register_uri("/api/ftx",    HTTP_GET,  handle_ftx);
     register_uri("/ws",         HTTP_GET,  handle_ws, true);
 
     esp_timer_create_args_t targs = {};
@@ -686,8 +923,13 @@ static void http_start()
 
 void web_start()
 {
+    image_alloc();
     lock = xSemaphoreCreateMutex();
     cw_set_min_contrast(g_settings.cw_min_contrast);
+    fax_set_lpm(g_settings.fax_lpm);
+    fax_set_ioc(g_settings.fax_ioc);
+    fax_set_auto(g_settings.fax_auto);
+    ftx_core_set_protocol((FtxProtocol)g_settings.ftx_mode);
     wifi_start();
     http_start();
 }

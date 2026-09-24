@@ -9,6 +9,10 @@ struct Settings {
     float cw_min_contrast;      // mark/space ratio needed to decode
     float rtty_baud;
     int rtty_polarity;          // RttyPolarity: 0 auto, 1 normal, 2 reverse
+    int fax_lpm;                // 60, 90, 120, 240
+    int fax_ioc;                // 576, 288
+    bool fax_auto;              // start on the APT start tone
+    int ftx_mode;               // FtxProtocol: 0 off, 1 FT8, 2 FT4
     char wifi_ssid[33];
     char wifi_pass[65];
 };

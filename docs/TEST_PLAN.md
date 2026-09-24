@@ -139,3 +139,45 @@ Enquanto o RTTY descodifica caracteres bem formados, tem prioridade: o CW é des
 2. Após 1–2 s a etiqueta passa a `FSK 2125/2295Hz sh170 RTTY?` e, com o squelch aberto, a `RTTY 2125/2295Hz 45bd`.
 3. O texto aparece no painel "Texto RTTY" da página web e no monitor série: `RYRYRY CQ CQ CQ DE CT1ABC ... THE QUICK BROWN FOX ... 0123456789 ...`.
 4. No espetro, as linhas azuis marcam a marca (tracejado) e o espaço (pontilhado).
+
+# Test plan - V0.8 (FAX, SSTV, FT8/FT4)
+
+## No PC (sem hardware)
+
+`python tools/fax_sim.py` corre o mesmo algoritmo do `src/fm_demod.cpp` + `src/fax_decoder.cpp` sobre FAX sintético (tom de início, 60 linhas de fase, imagem de teste, tom de fim):
+
+| caso | resultado |
+|---|---|
+| 120 lpm limpo, desfasamento 0,37 e 0,8 de linha | alinhado, erro médio 0,03 |
+| SNR 10 dB / 5 dB (em 2,5 kHz) | erro médio 0,08 / 0,13 (ruído nos pixels) |
+| desvio de +40 Hz | erro médio 0,05 |
+| 60 lpm, IOC 288 | alinhado |
+| só ruído, 120 s | não arranca |
+
+`python tools/sstv_sim.py` faz o mesmo para o `src/sstv_decoder.cpp`: todos os modos (Martin, Scottie, Robot, PD) com o VIS certo e todas as linhas; relógio do emissor ±0,2 % (inclinação corrigida); SNR 10–12 dB; só ruído, 120 s: nenhuma imagem. Nos modos mais rápidos (PD50, Scottie S2) as arestas mais finas ficam esbatidas pelo filtro FM.
+
+`tools/ftx_test/run.sh` compila o `src/ftx_core.cpp` + ft8_lib no PC e testa FT8/FT4 sintético (GFSK, ruído, vários sinais por período, início a meio de um período):
+
+| caso | resultado |
+|---|---|
+| FT8, 4 sinais de −8 a −18 dB, DT −0,4 a +1,2 s | todos, SNR ±0,7 dB, DT ±0,05 s |
+| FT4, 3 sinais de −8 a −12 dB | todos |
+| só ruído, 4 períodos | nenhuma mensagem |
+
+Precisa de um compilador de C/C++; sem gcc/clang: `pip install ziglang` e `CC="python -m ziglang cc" CXX="python -m ziglang c++" tools/ftx_test/run.sh`.
+
+Sinais de teste para tocar no telemóvel:
+
+```text
+python tools/fax_sim.py --wav fax.wav
+python tools/sstv_sim.py --wav sstv.wav "Martin M1"     (ou "Scottie S1", "Robot 36", "PD120", ...)
+python tools/fax_sim.py --file gravacao.wav             (descodifica um WAV para .pgm)
+python tools/sstv_sim.py --file gravacao.wav            (descodifica um WAV para .ppm)
+```
+
+## Na placa
+
+1. **FAX:** toca `fax.wav`. Após o tom de início (~1,5 s) o estado passa a «a alinhar» e depois a «a receber»; a imagem de teste (rampa, barras, diagonal) aparece direita e acaba com o tom de fim. Num emissor real (ex.: DWD Pinneberg 3855/7880/13882,5 kHz, Northwood 2618,5/4610/8040/11086,5 kHz) sintoniza em USB 1,9 kHz abaixo da frequência publicada. Se a imagem sair inclinada, ajusta `FAX_CLOCK_PPM` em `config.h`.
+2. **SSTV:** toca `sstv.wav`; a imagem começa sozinha com o VIS e o título indica o modo. No ar: 14,230 MHz USB; ISS em 145,800 MHz FM (PD120/PD180).
+3. **FT8/FT4:** escolhe FT8 na página. A hora tem de estar certa (NTP ou browser). Sintoniza 14,074 MHz USB (FT8) ou 14,080 MHz (FT4). A cada 15 s (7,5 s) aparecem as mensagens e o tempo de descodificação; compara com o WSJT-X no mesmo áudio, se possível. Verifica também que a carga da análise (canto superior) continua abaixo de ~80 %.
+

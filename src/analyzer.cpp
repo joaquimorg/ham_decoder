@@ -8,6 +8,10 @@
 #include "config.h"
 #include "cw_decoder.h"
 #include "rtty_decoder.h"
+#include "fm_demod.h"
+#include "fax_decoder.h"
+#include "sstv_decoder.h"
+#include "ftx_decoder.h"
 #include "capture.h"
 #include "classifier.h"
 #include "settings.h"
@@ -335,6 +339,11 @@ void report()
     char rtty_text[RTTY_TEXT_MAX + 1];
     rtty_take_text(rtty_text, sizeof(rtty_text));
     web_push_text(WEB_TEXT_RTTY, rtty_text);
+#if SERIAL_REPORT >= 2
+    for (char *p = rtty_text; *p; p++)
+        if (*p == '\n')
+            *p = ' ';    // the report is one line per second
+#endif
 
 #if SERIAL_REPORT >= 2
     // Text waterfall: one character per WATERFALL_HZ_PER_COL, 4 dB per step above floor.
@@ -448,6 +457,10 @@ void analyzer_init()
     }
     cw_init();
     rtty_init();
+    fm_demod_init();
+    fax_init();
+    sstv_init();
+    ftx_init();
     capture_init();
     reset();
 }
@@ -457,6 +470,11 @@ void analyzer_process_block(const float *x, int32_t raw_peak, uint32_t overruns)
     capture_push(x, N, cw_tone_hz() > 0.0f || rtty_mark_hz() > 0.0f);
     cw_process(x, N);
     rtty_process(x, N);
+    static float fm_hz[N];
+    fm_demod_process(x, fm_hz, N);
+    fax_process(fm_hz, N);
+    sstv_process(fm_hz, N);
+    ftx_process(x, N);
 
     for (int i = 0; i < N; i++) {
         const float s = x[i];

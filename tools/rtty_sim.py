@@ -81,7 +81,7 @@ class Decoder:
                 return
             if self.fq < FQ_SHOW:
                 return                              # mostly framing errors: not RTTY
-            self.text += ' ' if c == '\n' else c
+            self.text += c
 
     def process(self, x):
         for s in x:

@@ -33,7 +33,7 @@ constexpr float GAP_LEVEL = 0.3f, GAP_MAX = 0.15f;
 
 constexpr int FIGS_CODE = 0x1B, LTRS_CODE = 0x1F;
 // ITA2 letters and US-TTY figures, indexed by the 5-bit code. '\0' = nothing
-// to print (NUL, CR, BELL, shifts); '\n' is shown as a space.
+// to print (NUL, CR, BELL, shifts); LF starts a new line.
 const char LTRS[32] = {
     0, 'E', '\n', 'A', ' ', 'S', 'I', 'U', 0, 'D', 'R', 'J', 'N', 'F', 'C', 'K',
     'T', 'Z', 'L', 'W', 'H', 'Y', 'P', 'Q', 'O', 'B', 'G', 0, 'M', 'X', 'V', 0,
@@ -109,7 +109,7 @@ void emit_code(int code)
         figs = false;    // unshift on space (USOS)
     if (!c || frame_quality < FQ_SHOW)
         return;          // nothing to print, or mostly framing errors: not RTTY
-    emit_char(c == '\n' ? ' ' : c);
+    emit_char(c);
 }
 
 void reset_state()

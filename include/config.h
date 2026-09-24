@@ -96,6 +96,22 @@
 #define RTTY_UNLOCK_REPORTS 5       // seconds without FSK before unlocking
 #define RTTY_TEXT_MAX       64      // decoded characters buffered per report
 
+// Image modes (FAX, SSTV): shared FM discriminator (fm_demod.cpp)
+#define FM_CENTER_HZ        1700.0f // SSTV 1100..2300 Hz, FAX 1500..2300 Hz
+#define FM_CUTOFF_HZ        1000.0f // low-pass after mixing: 700..2700 Hz
+#define FM_TAPS             63
+
+// HF FAX (WEFAX): 1500 Hz black, 2300 Hz white
+#define FAX_WIDTH           904     // pixels per line (IOC 576 has pi*576 = 1810)
+#define FAX_DEFAULT_LPM     120
+#define FAX_DEFAULT_IOC     576
+#define FAX_MAX_LINES       3000    // an image ends here if no stop tone comes
+#define FAX_CLOCK_PPM       0.0f    // sample clock correction (slant)
+
+// FT8 / FT4 (ft8_lib): UTC time from NTP (pool.ntp.org) or from the web page
+#define FTX_NTP_SERVER      "pool.ntp.org"
+#define FTX_TASK_STACK      12288   // decoding task (core 0)
+
 // Wi-Fi radio. Power save (modem sleep) switches the radio on and off in
 // bursts that show up as noise and spurs on the internal ADC and delay
 // packets, so it is disabled. TX power in 0.25 dBm units (8..84): 78 = 19.5 dBm.

@@ -5,3 +5,4 @@
 .vscode/ipch
 logs/
 include/wifi_secrets.h
+build/
