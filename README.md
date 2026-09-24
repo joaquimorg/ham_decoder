@@ -40,7 +40,8 @@ Máximo ~2,8 Vpp na entrada. Esquema, a ligação do PCM1808 e os GPIOs a evitar
 4. classifica o sinal (ruído, tom, CW, FSK/RTTY, voz);
 5. descodifica CW (Morse) no tom detetado e RTTY (Baudot, 45,45/50/75 baud) nos dois tons FSK detetados;
 6. escreve no monitor série o texto CW e as mudanças de sinal; com `SERIAL_REPORT 2` em `config.h`, escreve também a linha completa do waterfall em texto a cada segundo;
-7. serve uma **página web** por Wi-Fi com espectro, waterfall, classificação, texto CW e configuração.
+7. classifica o sinal também com um modelo **TinyML** (rede MLP int8, ver abaixo);
+8. serve uma **página web** por Wi-Fi com espectro, waterfall, classificação, texto CW e configuração.
 
 ## Interface web
 
@@ -59,7 +60,7 @@ Na página:
 
 Em alternativa, a rede pode vir já no firmware: copia `include/wifi_secrets.h.example` para `include/wifi_secrets.h`, que é ignorado pelo git.
 
-Ainda não há display nem TinyML. Os testes estão em [docs/TEST_PLAN.md](docs/TEST_PLAN.md).
+Ainda não há display. Os testes estão em [docs/TEST_PLAN.md](docs/TEST_PLAN.md).
 
 ## Teste inicial
 
@@ -126,21 +127,26 @@ Com um tom, o tom aparece no waterfall.
 - [ ] validar com sinais reais do rádio
 
 ### V0.6 - TinyML
-- [ ] recolha de amostras
-- [ ] dataset
-- [ ] espectrogramas
-- [ ] modelo de classificação
-- [ ] quantização
-- [ ] inferência no ESP32-S3
+- [x] recolha de amostras (`ML_LOG_FEATURES` em `config.h` + `tools/ml/log_to_npz.py`)
+- [x] dataset (sintético: `tools/ml/synth.py`, com harmónicos, reverberação, fading e ruído de SSB)
+- [x] espectrogramas / features (espetro à volta do pico, bandas largas, espetro de modulação do envelope)
+- [x] modelo de classificação (MLP 110 → 32 → 16 → 6)
+- [x] quantização (pesos int8, uma escala por camada)
+- [x] inferência no ESP32-S3 (`src/classifier.cpp`)
+- [x] primeiro teste com o rádio (CW: estável em CW, onde a heurística alterna CW/TOM)
+- [x] treinar com exemplos reais do rádio: CW, RTTY (FSK 50 bd, shift 446 Hz), voz e PSK31; 175/180 segundos reais certos num conjunto de teste à parte
 
-Classes iniciais previstas:
+Classes: RUIDO, TOM, CW, RTTY (inclui FSK), PSK31, VOZ.
 
-- NOISE
-- VOICE
-- CW
-- RTTY
-- FSK
-- PSK31
+Treino (precisa de `numpy`):
+
+```text
+python tools/ml/train.py                         # gera include/ml_model.h
+python tools/ml/classify_wav.py gravacao.wav     # testa o modelo num WAV
+```
+
+Para juntar exemplos reais: `ML_LOG_FEATURES 1` e `ML_LOG_LABEL "CW"` em `config.h`, gravar o monitor com o rádio nesse modo, e depois
+`python tools/ml/log_to_npz.py logs/<ficheiro>.log -o real_cw.npz` e `python tools/ml/train.py --extra real_cw.npz`.
 
 ### V0.7 - SD Card
 - [ ] gravação de amostras

@@ -9,6 +9,7 @@
 #include "cw_decoder.h"
 #include "rtty_decoder.h"
 #include "capture.h"
+#include "classifier.h"
 #include "settings.h"
 #include "web_ui.h"
 
@@ -40,6 +41,7 @@ float im[N];
 float psd[HALF];
 float db[HALF];
 float scratch[HALF];
+float psd_avg[HALF];
 
 int frames = 0;
 int unlock_reports = 0;
@@ -142,8 +144,23 @@ void report()
 {
     const float inv = 1.0f / frames;
 
-    for (int k = 0; k < HALF; k++)
-        db[k] = 10.0f * log10f(psd[k] * inv + 1e-14f);
+    for (int k = 0; k < HALF; k++) {
+        psd_avg[k] = psd[k] * inv;
+        db[k] = 10.0f * log10f(psd_avg[k] + 1e-14f);
+    }
+
+    // TinyML classifier (runs alongside the heuristic one below).
+    const MlResult ml = classifier_run(psd_avg, env_db, env_count);
+#if ML_LOG_FEATURES
+    {
+        int nf;
+        const float *f = classifier_features(&nf);
+        printf("ML_F,%s", ML_LOG_LABEL);
+        for (int i = 0; i < nf; i++)
+            printf(",%.4f", f[i]);
+        printf("\n");
+    }
+#endif
 
     int kmin = (int)ceilf(SPECTRUM_MIN_HZ / BIN_HZ);
     int kmax = (int)floorf(SPECTRUM_MAX_HZ / BIN_HZ);
@@ -355,14 +372,16 @@ void report()
     ws.rtty_mark_hz = rtty_mark_hz();
     ws.rtty_space_hz = rtty_space_hz();
     ws.rtty_active = rtty_active();
+    strlcpy(ws.ml_label, ml_class_name(ml.cls), sizeof(ws.ml_label));
+    ws.ml_prob = ml.prob;
     web_push_status(ws);
 
 #if SERIAL_REPORT >= 2
     if (report_no % WATERFALL_RULER_EVERY == 0)
         print_ruler();
 
-    printf("%5" PRIu32 " |%s| %-28s SNR%3.0f rms%4.0f pk%4.0f%s%s%s%s%s\n",
-           report_no, wf, label, snr, rms_dbfs, pk_dbfs,
+    printf("%5" PRIu32 " |%s| %-28s ML %-5s %3.0f%% SNR%3.0f rms%4.0f pk%4.0f%s%s%s%s%s\n",
+           report_no, wf, label, ml_class_name(ml.cls), ml.prob * 100.0f, snr, rms_dbfs, pk_dbfs,
            pk_dbfs > -0.5f ? " CLIP!" : "",
            last_overruns ? " OVR" : "",
            cw_text[0] || rtty_text[0] ? "  \"" : "", cw_text[0] ? cw_text : rtty_text,
@@ -390,9 +409,12 @@ void report()
     char kind[8];
     const size_t klen = strcspn(label, " ");
     strlcpy(kind, label, klen + 1 < sizeof(kind) ? klen + 1 : sizeof(kind));
-    if (strcmp(kind, last_kind) != 0) {
-        printf("\n[%s  SNR %.0f dB  pk %.0f dBFS]\n", label, snr, pk_dbfs);
+    static int last_ml = -1;
+    if (strcmp(kind, last_kind) != 0 || ml.cls != last_ml) {
+        printf("\n[%s  ML %s %.0f%%  SNR %.0f dB  pk %.0f dBFS]\n", label,
+               ml_class_name(ml.cls), ml.prob * 100.0f, snr, pk_dbfs);
         strlcpy(last_kind, kind, sizeof(last_kind));
+        last_ml = ml.cls;
     }
     if (cw_text[0] || rtty_text[0]) {
         fputs(cw_text, stdout);

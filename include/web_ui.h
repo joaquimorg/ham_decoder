@@ -23,6 +23,8 @@ struct WebStatus {
     float rtty_mark_hz;     // 0 = unlocked
     float rtty_space_hz;
     bool rtty_active;       // squelch open
+    char ml_label[8];       // TinyML classifier
+    float ml_prob;
 };
 
 enum WebTextChannel { WEB_TEXT_CW = 0, WEB_TEXT_RTTY = 1 };

@@ -119,5 +119,10 @@
 #define WATERFALL_HZ_PER_COL    50
 #define WATERFALL_RULER_EVERY   20
 
+// TinyML classifier: 1 = print the feature vector of every report as
+// "ML_F,<label>,<values>" to record real examples for tools/ml/log_to_npz.py.
+#define ML_LOG_FEATURES     0
+#define ML_LOG_LABEL        "?"
+
 // 1 = print floor/peaks/envelope details under each waterfall line
 #define DIAG_VERBOSE        0

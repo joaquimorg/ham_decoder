@@ -97,6 +97,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   <section class="card">
     <div class="status">
       <div class="metric label"><div class="k">Sinal</div><div class="v" id="label">-</div></div>
+      <div class="metric"><div class="k">TinyML</div><div class="v" id="ml">-</div></div>
       <div class="metric"><div class="k">SNR</div><div class="v" id="snr">-</div></div>
       <div class="metric"><div class="k">RMS</div><div class="v" id="rms">-</div></div>
       <div class="metric"><div class="k">Pico</div><div class="v" id="pk">-</div></div>
@@ -355,6 +356,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     if (document.activeElement !== $('pol')) $('pol').value = String(d.rtty_pol);
 
     $('label').textContent = d.label || '-';
+    $('ml').textContent = d.ml ? d.ml + ' ' + Math.round(d.ml_p * 100) + '%' : '-';
     $('snr').textContent = d.snr.toFixed(0) + ' dB';
     $('rms').textContent = d.rms.toFixed(0) + ' dBFS';
     $('pk').textContent = d.pk.toFixed(0) + ' dBFS';

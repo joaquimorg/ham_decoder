@@ -357,6 +357,9 @@ static int format_json(bool with_rows, char *json, size_t cap)
     n += json_str(json + n, cap - n, snap.text[WEB_TEXT_RTTY]);
     n += snprintf(json + n, cap - n, ",\"label\":");
     n += json_str(json + n, cap - n, st.label);
+    n += snprintf(json + n, cap - n, ",\"ml\":");
+    n += json_str(json + n, cap - n, st.ml_label);
+    n += snprintf(json + n, cap - n, ",\"ml_p\":%.2f", st.ml_prob);
     n += snprintf(json + n, cap - n,
                   ",\"snr\":%.1f,\"rms\":%.1f,\"pk\":%.1f,\"clip\":%s,\"tone\":%.1f,\"wpm\":%.1f,"
                   "\"cw_auto\":%s,\"cw_manual\":%.1f,\"contrast\":%.2f,"
