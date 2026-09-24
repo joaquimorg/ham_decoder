@@ -105,6 +105,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
                       margin-top: 6px; font-size: 12px; color: var(--muted); }
 .gallery figcaption button { padding: 2px 8px; font-size: 12px; }
 .imgbox { max-height: 75vh; overflow-y: auto; background: #000; border-radius: 6px; }
+#imgView { margin: 0 auto; border-radius: 0; }
 #img { image-rendering: auto; border-radius: 0; }
 #img[hidden] { display: none; }
 @media (max-width: 900px) {
@@ -821,7 +822,14 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     const on = rot !== 0 && imgCv.height > 0;
     view.hidden = !on;
     imgCv.style.display = on ? 'none' : '';
-    if (on) drawRotated(view);
+    if (!on) return;
+    drawRotated(view);
+    // Same scale as the unrotated image (box width / line width): at 90/270
+    // degrees the width is the lines received so far, and stretching that to
+    // the box width blew a partial image up many times.
+    const scale = view.parentElement.clientWidth / img.w;
+    view.style.width = Math.min(view.width * scale, view.parentElement.clientWidth) + 'px';
+    view.style.height = 'auto';
   }
 
   // At most twice a second: redrawing the whole image for every block of lines
