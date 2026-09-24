@@ -34,6 +34,7 @@ static void set_defaults()
     g_settings.fax_ioc = FAX_DEFAULT_IOC;
     g_settings.fax_auto = true;
     g_settings.ftx_mode = 0;
+    g_settings.sstv_adjust = false;
     strlcpy(g_settings.wifi_ssid, WIFI_SSID, sizeof(g_settings.wifi_ssid));
     strlcpy(g_settings.wifi_pass, WIFI_PASS, sizeof(g_settings.wifi_pass));
 }
@@ -74,6 +75,8 @@ void settings_init()
         g_settings.fax_auto = u8 != 0;
     if (nvs_get_u8(h, "ftx_mode", &u8) == ESP_OK && u8 <= 2)
         g_settings.ftx_mode = u8;
+    if (nvs_get_u8(h, "sstv_adj", &u8) == ESP_OK)
+        g_settings.sstv_adjust = u8 != 0;
     len = sizeof(g_settings.wifi_ssid);
     nvs_get_str(h, "ssid", g_settings.wifi_ssid, &len);
     len = sizeof(g_settings.wifi_pass);
@@ -118,6 +121,7 @@ void settings_save()
     nvs_set_u32(h, "fax_ioc", (uint32_t)g_settings.fax_ioc);
     nvs_set_u8(h, "fax_auto", g_settings.fax_auto ? 1 : 0);
     nvs_set_u8(h, "ftx_mode", (uint8_t)g_settings.ftx_mode);
+    nvs_set_u8(h, "sstv_adj", g_settings.sstv_adjust ? 1 : 0);
     nvs_set_str(h, "ssid", g_settings.wifi_ssid);
     nvs_set_str(h, "pass", g_settings.wifi_pass);
     nvs_commit(h);

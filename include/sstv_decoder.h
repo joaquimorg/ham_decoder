@@ -11,6 +11,10 @@ void sstv_init();
 // Measured DSP sample rate (Hz), used from the next image on.
 void sstv_set_sample_rate(float hz);
 
+// Auto adjust: at the end of an image, find line length and start from all
+// its syncs and draw it again (off: the image stays as drawn live).
+void sstv_set_auto_adjust(bool on);
+
 void sstv_request_stop();    // from other tasks, applied on the next sstv_process()
 
 bool sstv_receiving();

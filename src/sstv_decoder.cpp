@@ -108,6 +108,7 @@ const Mode MODES[] = {
 constexpr int MAX_W = 640;
 
 volatile bool req_stop = false;
+volatile bool adjust_on = false;
 
 int16_t *ring = nullptr;
 uint64_t count = 0;             // samples ever received
@@ -304,7 +305,7 @@ void end_image()
     receiving = false;
     if (rows_sent >= GALLERY_MIN_ROWS) {
         const int64_t t_start = esp_timer_get_time();
-        if (auto_adjust()) {
+        if (adjust_on && auto_adjust()) {
             // Draw it all again as a new web image (replaces the live one).
             const int lines = line_no;
             web_image_end(web_id);
@@ -344,7 +345,7 @@ void begin_image(const Mode *m, double vis_end, float offset)
     // (whose samples are still in the ring).
     free(track);
     track_cap = (size_t)((m->lines * m->line_ms + m->first_ms + 500.0f) * MS * (1.0 + SLANT_MAX));
-    track = (uint8_t *)heap_caps_malloc(track_cap, MALLOC_CAP_SPIRAM);
+    track = adjust_on ? (uint8_t *)heap_caps_malloc(track_cap, MALLOC_CAP_SPIRAM) : nullptr;
     track_n = 0;
     track_base = (uint64_t)ceil(t0);
     if (track)
@@ -541,6 +542,11 @@ void sstv_set_sample_rate(float hz)
 {
     if (hz > 0.95f * FS && hz < 1.05f * FS)
         rate_ms = hz / 1000.0f;
+}
+
+void sstv_set_auto_adjust(bool on)
+{
+    adjust_on = on;
 }
 
 void sstv_request_stop()

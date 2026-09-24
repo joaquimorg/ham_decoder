@@ -290,7 +290,10 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
           <label><input type="checkbox" id="faxAuto"> Começar sozinho com o tom de início</label>
         </div>
         <div class="note" style="margin-top: 8px">Sintoniza em USB com a portadora 1,9 kHz abaixo da frequência publicada (1500 Hz = preto, 2300 Hz = branco). A meio de uma emissão, usa «Iniciar FAX agora».</div>
-        <div class="note" style="margin-top: 8px">SSTV (Martin, Scottie, Robot, PD) começa sozinho com o cabeçalho VIS; não precisa de configuração.</div>
+        <div class="note" style="margin-top: 8px">SSTV (Martin, Scottie, Robot, PD) começa sozinho com o cabeçalho VIS.</div>
+      <div class="row">
+        <label><input type="checkbox" id="sstvAdjust"> SSTV: ajuste automático no fim (redesenha a imagem com o ritmo de linha medido em todos os sincronismos)</label>
+      </div>
       </section>
     </div>
   </div>
@@ -440,6 +443,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     if (document.activeElement !== $('faxLpm')) $('faxLpm').value = String(d.fax_lpm);
     if (document.activeElement !== $('faxIoc')) $('faxIoc').value = String(d.fax_ioc);
     $('faxAuto').checked = d.fax_auto;
+    $('sstvAdjust').checked = d.sstv_adjust;
     showFtx(d);
     if (d.gal !== galSeq) loadGallery(d.gal);
     const live = { cw: !!d.tone, rtty: !!d.rtty_on, ftx: d.ftx_mode > 0 && d.ftx_time,
@@ -513,7 +517,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       } else setTimeout(connectWs, 2000);
     };
   }
-  setInterval(() => { if (ws && Date.now() - lastMsg > 5000) ws.close(); }, 2000);
+  setInterval(() => { if (ws && Date.now() - lastMsg > 10000) ws.close(); }, 2000);
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { if (ws) ws.close(); } else connectWs();
   });
@@ -591,7 +595,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   // gives the lines their real height).
   const imgCv = $('img'), imgCtx = imgCv.getContext('2d');
   const img = { id: 0, next: 0, base: 0, w: 0, ch: 1, aspect: 1, total: 0, active: false, title: '' };
-  let faxState = 0, sstv = '';
+  let faxState = 0, sstv = '', activeTab = 'cw';
 
   function showImgInfo() {
     const fax = ['à espera do tom de início', 'a alinhar (linhas de fase)', 'a receber'][faxState] || '';
@@ -641,9 +645,11 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     return img.next < img.total;
   }
 
+  // Only while the FAX/SSTV tab is shown: the board keeps the whole image, and
+  // the lines not fetched meanwhile arrive when the tab is opened.
   async function pollImg() {
     let again = 1000;
-    if (!document.hidden) {
+    if (!document.hidden && activeTab === 'img') {
       const ctl = new AbortController();
       const guard = setTimeout(() => ctl.abort(), 8000);
       try {
@@ -731,11 +737,19 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       for (const [n, fig] of galCache) if (!list.imgs.some(i => i.n === n)) { fig.remove(); galCache.delete(n); }
       for (const im of list.imgs) {
         if (galCache.has(im.n)) continue;
-        const buf = await (await fetch(`/api/gallery_img?n=${im.n}`, { cache: 'no-store' })).arrayBuffer();
-        if (buf.byteLength < im.w * im.h * 3) continue;
+        // In pieces of up to 32 KB (the board sends no more per request).
+        const size = im.w * im.h * 3, px = new Uint8Array(size);
+        let got = 0;
+        while (got < size) {
+          const part = await (await fetch(`/api/gallery_img?n=${im.n}&o=${got}`, { cache: 'no-store' })).arrayBuffer();
+          if (!part.byteLength) break;
+          px.set(new Uint8Array(part).subarray(0, size - got), got);
+          got += part.byteLength;
+        }
+        if (got < size) continue;
         const c = document.createElement('canvas');
         c.width = im.w; c.height = im.h;
-        const out = c.getContext('2d').createImageData(im.w, im.h), px = new Uint8Array(buf);
+        const out = c.getContext('2d').createImageData(im.w, im.h);
         for (let i = 0, o = 0; i < im.w * im.h; i++, o += 4) {
           out.data[o] = px[i * 3]; out.data[o + 1] = px[i * 3 + 1]; out.data[o + 2] = px[i * 3 + 2]; out.data[o + 3] = 255;
         }
@@ -776,6 +790,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   $('faxLpm').onchange = () => postConfig({ fax_lpm: $('faxLpm').value });
   $('faxIoc').onchange = () => postConfig({ fax_ioc: $('faxIoc').value });
   $('faxAuto').onchange = () => postConfig({ fax_auto: $('faxAuto').checked ? 1 : 0 });
+  $('sstvAdjust').onchange = () => postConfig({ sstv_adjust: $('sstvAdjust').checked ? 1 : 0 });
 
   $('wifi').onsubmit = async ev => {
     ev.preventDefault();
@@ -793,6 +808,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   // Tabs: one mode at a time under the waterfall; the choice is kept in this
   // browser. A dot marks tabs with something being decoded.
   function showTab(name) {
+    activeTab = name;
     for (const b of document.querySelectorAll('#tabs button')) b.classList.toggle('on', b.dataset.tab === name);
     for (const p of document.querySelectorAll('.pane')) p.classList.toggle('on', p.dataset.pane === name);
     try { localStorage.setItem('tab', name); } catch (e) {}

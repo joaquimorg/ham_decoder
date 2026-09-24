@@ -13,6 +13,7 @@ struct Settings {
     int fax_ioc;                // 576, 288
     bool fax_auto;              // start on the APT start tone
     int ftx_mode;               // FtxProtocol: 0 off, 1 FT8, 2 FT4
+    bool sstv_adjust;           // redraw SSTV images with the auto adjust
     char wifi_ssid[33];
     char wifi_pass[65];
 };

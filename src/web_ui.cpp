@@ -517,7 +517,8 @@ static int format_json(bool with_rows, char *json, size_t cap)
     n += snprintf(json + n, cap - n, ",\"sstv_rx\":%s,\"sstv_lines\":%d,\"sstv_mode\":",
                   sstv_receiving() ? "true" : "false", sstv_lines());
     n += json_str(json + n, cap - n, sstv_mode_name());
-    n += snprintf(json + n, cap - n, ",\"gal\":%" PRIu32, gal_seq);
+    n += snprintf(json + n, cap - n, ",\"gal\":%" PRIu32 ",\"sstv_adjust\":%s", gal_seq,
+                  g_settings.sstv_adjust ? "true" : "false");
     n += snprintf(json + n, cap - n,
                   ",\"ftx_mode\":%d,\"ftx_time\":%s,\"ftx_n\":%d,\"ftx_ms\":%d,\"ftx_lost\":%d,\"utc\":%lld",
                   g_settings.ftx_mode, ftx_time_ok() ? "true" : "false", ftx_last_count(), ftx_last_ms(),
@@ -558,9 +559,11 @@ static esp_err_t handle_data(httpd_req_t *req)
 // GET /api/img?i=<image id>&l=<next line>
 // Binary, little endian: u32 id, u32 first line sent, u32 lines in the image,
 // u16 width, u8 channels, u8 receiving, f32 aspect, char title[32], then the
-// lines from `first` on (at most IMG_MAX_SEND). A different id restarts from
+// lines from `first` on (at most IMG_MAX_BYTES). A different id restarts from
 // the oldest line still held.
-#define IMG_MAX_SEND 200
+// Small replies: one HTTP task serves everything, and a long send (hundreds of
+// KB on a weak link) starved the WebSocket until the page dropped it.
+#define IMG_MAX_BYTES (32 * 1024)
 
 static esp_err_t handle_img(httpd_req_t *req)
 {
@@ -596,7 +599,8 @@ static esp_err_t handle_img(httpd_req_t *req)
     esp_err_t err = httpd_resp_send_chunk(req, (const char *)head, sizeof(head));
     // A few lines at a time: copied under the lock, sent without it.
     EXT_RAM_BSS_ATTR static uint8_t buf[2 * WEB_IMG_MAX_LINE];    // HTTP server task only
-    const uint32_t last = total - first > IMG_MAX_SEND ? first + IMG_MAX_SEND : total;
+    const uint32_t max_lines = bytes ? (IMG_MAX_BYTES / bytes > 0 ? IMG_MAX_BYTES / bytes : 1) : 0;
+    const uint32_t last = total - first > max_lines ? first + max_lines : total;
     const uint32_t per_send = bytes ? sizeof(buf) / bytes : 0;
     for (uint32_t k = first; k < last && err == ESP_OK;) {
         const uint32_t n = last - k < per_send ? last - k : per_send;
@@ -673,34 +677,44 @@ static esp_err_t handle_gallery(httpd_req_t *req)
     return httpd_resp_send(req, json, o);
 }
 
-// GET /api/gallery_img?n=<n> -> RGB pixels, w*h*3 bytes (size from /api/gallery).
+// GET /api/gallery_img?n=<n>&o=<offset> -> up to IMG_MAX_BYTES of the RGB
+// pixels (w*h*3 bytes, size from /api/gallery) from byte `offset` on.
 static esp_err_t handle_gallery_img(httpd_req_t *req)
 {
     uint32_t want = 0;
-    char q[32], v[16];
-    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
-        httpd_query_key_value(q, "n", v, sizeof(v)) == ESP_OK)
-        want = strtoul(v, nullptr, 10);
+    size_t off = 0;
+    char q[48], v[16];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK) {
+        if (httpd_query_key_value(q, "n", v, sizeof(v)) == ESP_OK)
+            want = strtoul(v, nullptr, 10);
+        if (httpd_query_key_value(q, "o", v, sizeof(v)) == ESP_OK)
+            off = strtoul(v, nullptr, 10);
+    }
     const GalleryImg &g = gallery[(want + WEB_GALLERY - 1) % WEB_GALLERY];
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     // In chunks copied under the lock: the slot may be reused meanwhile.
     EXT_RAM_BSS_ATTR static uint8_t buf[8192];    // HTTP server task only
-    size_t off = 0, total = 0;
+    const size_t start = off;
+    size_t end = 0;
     esp_err_t err = ESP_OK;
     do {
         xSemaphoreTake(lock, portMAX_DELAY);
         const bool held = want && g.n == want;
-        total = held ? (size_t)g.w * g.h * 3 : 0;
-        const size_t n = total - off < sizeof(buf) ? total - off : sizeof(buf);
-        if (held)
+        const size_t total = held ? (size_t)g.w * g.h * 3 : 0;
+        if (!end)
+            end = total < start + IMG_MAX_BYTES ? total : start + IMG_MAX_BYTES;
+        const size_t n = held && off < end ? (end - off < sizeof(buf) ? end - off : sizeof(buf)) : 0;
+        if (n)
             memcpy(buf, g.px + off, n);
         xSemaphoreGive(lock);
         if (!held)
-            return off ? ESP_FAIL : httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "sem imagem");
+            return off > start ? ESP_FAIL : httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "sem imagem");
+        if (!n)
+            break;
         err = httpd_resp_send_chunk(req, (const char *)buf, n);
         off += n;
-    } while (err == ESP_OK && off < total);
+    } while (err == ESP_OK && off < end);
     if (err == ESP_OK)
         err = httpd_resp_send_chunk(req, nullptr, 0);
     return err;
@@ -910,6 +924,8 @@ static esp_err_t handle_config(httpd_req_t *req)
     }
     if (form_value(body, "fax_auto", v, sizeof(v)))
         g_settings.fax_auto = atoi(v) != 0;
+    if (form_value(body, "sstv_adjust", v, sizeof(v)))
+        g_settings.sstv_adjust = atoi(v) != 0;
     if (form_value(body, "ftx_mode", v, sizeof(v))) {
         const int m = atoi(v);
         if (m >= FTX_OFF && m <= FTX_FT4)
@@ -934,6 +950,7 @@ static esp_err_t handle_config(httpd_req_t *req)
     fax_set_lpm(g_settings.fax_lpm);
     fax_set_ioc(g_settings.fax_ioc);
     fax_set_auto(g_settings.fax_auto);
+    sstv_set_auto_adjust(g_settings.sstv_adjust);
     cw_set_min_contrast(g_settings.cw_min_contrast);
     settings_save();
     httpd_resp_set_type(req, "application/json");
@@ -1026,6 +1043,7 @@ void web_start()
     fax_set_lpm(g_settings.fax_lpm);
     fax_set_ioc(g_settings.fax_ioc);
     fax_set_auto(g_settings.fax_auto);
+    sstv_set_auto_adjust(g_settings.sstv_adjust);
     ftx_core_set_protocol((FtxProtocol)g_settings.ftx_mode);
     wifi_start();
     http_start();
