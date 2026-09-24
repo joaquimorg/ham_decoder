@@ -262,6 +262,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       </div>
       <div class="note" id="imgInfo" style="margin-bottom: 8px">Sem imagem.</div>
       <div class="imgbox"><canvas id="img" hidden></canvas></div>
+      <div class="hint" id="faxHint" hidden>FAX desalinhado? Clica na margem esquerda do mapa para a pôr no início da linha.</div>
     </section>
     <section class="card">
       <h2>Últimas imagens SSTV</h2>
@@ -601,6 +602,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     const fax = ['à espera do tom de início', 'a alinhar (linhas de fase)', 'a receber'][faxState] || '';
     const cur = img.id ? `${img.title} · ${img.total} linhas${img.active ? '' : ' · terminada'}` : 'Sem imagem';
     $('imgInfo').textContent = `${cur} · FAX: ${fax} · SSTV: ${sstv}`;
+    const isFax = img.title.startsWith('FAX');
+    $('faxHint').hidden = !isFax;
+    imgCv.style.cursor = isFax ? 'crosshair' : '';
   }
 
   function imgResize(h) {
@@ -774,6 +778,14 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     } catch (e) {}
     galBusy = false;
   }
+
+  // Manual FAX alignment: the clicked column becomes the line start.
+  imgCv.addEventListener('click', ev => {
+    if (!img.title.startsWith('FAX')) return;
+    const r = imgCv.getBoundingClientRect();
+    const share = (ev.clientX - r.left) / r.width;
+    if (share > 0.005 && share < 0.995) postConfig({ fax_shift: share.toFixed(4) });
+  });
 
   $('faxStart').onclick = () => postConfig({ fax_start: 1 });
   $('imgStop').onclick = () => postConfig({ img_stop: 1 });

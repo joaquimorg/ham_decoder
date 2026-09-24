@@ -156,6 +156,28 @@ void web_image_line(uint32_t id, const uint8_t *px)
     xSemaphoreGive(lock);
 }
 
+uint32_t web_image_rotate(uint32_t id, int px)
+{
+    if (!lock || !img_ring)
+        return id;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    if (id == img_id && img_width > 0) {
+        px = ((px % img_width) + img_width) % img_width;
+        const size_t bytes = (size_t)img_width * img_channels, cut = (size_t)px * img_channels;
+        static uint8_t tmp[WEB_IMG_MAX_LINE];
+        const uint32_t held = img_lines < img_cap ? img_lines : img_cap;
+        for (uint32_t k = img_lines - held; k < img_lines && cut; k++) {
+            uint8_t *line = img_ring + (k % img_cap) * bytes;
+            memcpy(tmp, line, cut);
+            memmove(line, line + cut, bytes - cut);
+            memcpy(line + bytes - cut, tmp, cut);
+        }
+        id = ++img_id;
+    }
+    xSemaphoreGive(lock);
+    return id;
+}
+
 void web_image_end(uint32_t id)
 {
     if (!lock)
@@ -941,6 +963,8 @@ static esp_err_t handle_config(httpd_req_t *req)
     }
     ftx_core_set_protocol((FtxProtocol)g_settings.ftx_mode);
     // One-off actions, not settings.
+    if (form_value(body, "fax_shift", v, sizeof(v)))
+        fax_request_shift(strtof(v, nullptr));
     if (form_value(body, "fax_start", v, sizeof(v)))
         fax_request_start();
     if (form_value(body, "img_stop", v, sizeof(v))) {

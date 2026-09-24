@@ -20,6 +20,9 @@ void fax_set_sample_rate(float hz);
 // Requests from other tasks, applied on the next fax_process().
 void fax_request_start();         // start receiving now, without phasing
 void fax_request_stop();
+// Manual alignment: the column at `share` of the line width (0..1) is the
+// real line start (the chart's left edge).
+void fax_request_shift(float share);
 
 FaxState fax_state();
 int fax_lines();                  // lines of the current image

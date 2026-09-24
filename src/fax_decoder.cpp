@@ -42,6 +42,7 @@ constexpr int PHASE_MAX_LINES = 80;              // give up (and skip) after thi
 constexpr float PHASE_FLAT = 0.15f;              // std. deviation outside the pulse
 
 volatile bool req_start = false, req_stop = false;
+volatile float req_shift = -1.0f;
 int lpm = FAX_DEFAULT_LPM, ioc = FAX_DEFAULT_IOC;
 bool auto_start = true;
 float rate = FS;               // measured sample rate
@@ -270,6 +271,14 @@ void end_of_line()
         end_image();
 }
 
+// Restarts the pixel accumulation (after moving `pos`).
+void col_reset()
+{
+    col = 0;
+    acc = 0.0f;
+    acc_n = 0;
+}
+
 void put_pixel()
 {
     if (acc_n)
@@ -364,6 +373,12 @@ void fax_request_start()
     req_start = true;
 }
 
+void fax_request_shift(float share)
+{
+    if (share > 0.0f && share < 1.0f)
+        req_shift = share;
+}
+
 void fax_request_stop()
 {
     req_stop = true;
@@ -381,6 +396,20 @@ int fax_lines()
 
 void fax_process(const float *hz, int n)
 {
+    const float shift = req_shift;
+    if (shift > 0.0f) {
+        req_shift = -1.0f;
+        if (state != FAX_IDLE) {
+            // Lines already sent are rotated on the page; the next ones start
+            // that much later (the partial line in progress is lost).
+            const int col = (int)(shift * W + 0.5f);
+            web_id = web_image_rotate(web_id, col);
+            pos -= col * line_samples / W;
+            if (pos >= 0.0f)
+                pos -= line_samples;
+            col_reset();
+        }
+    }
     if (req_stop) {
         req_stop = false;
         end_image();

@@ -47,6 +47,10 @@ void web_set_load(float fraction);             // analysis task busy share (0..1
 uint32_t web_image_begin(const char *title, int width, int channels, float aspect);
 void web_image_line(uint32_t id, const uint8_t *px);
 void web_image_end(uint32_t id);
+// Rotates every held line of image `id` left by `px` pixels (manual FAX
+// alignment) and gives it a new id, so pages fetch it again. Returns the new
+// id (the old one if `id` is no longer current).
+uint32_t web_image_rotate(uint32_t id, int px);
 // Copies the image `id` (if still the current one and whole in the ring) to
 // the gallery of the last WEB_GALLERY images (GET /api/gallery).
 #define WEB_GALLERY 5
