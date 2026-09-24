@@ -256,12 +256,13 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
         <div class="row">
           <button id="faxStart">Iniciar FAX agora</button>
           <button id="imgStop">Parar</button>
+          <button id="imgRot" title="Rodar 90° (fica guardado neste browser)">Rodar ↻</button>
           <button id="imgSave">Guardar PNG</button>
           <button id="imgClear">Limpar</button>
         </div>
       </div>
       <div class="note" id="imgInfo" style="margin-bottom: 8px">Sem imagem.</div>
-      <div class="imgbox"><canvas id="img" hidden></canvas></div>
+      <div class="imgbox"><canvas id="img" hidden></canvas><canvas id="imgView" hidden></canvas></div>
       <div class="hint" id="faxHint" hidden>FAX desalinhado? Clica na margem esquerda do mapa para a pôr no início da linha.</div>
     </section>
     <section class="card">
@@ -604,7 +605,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     const cur = img.id ? `${img.title} · ${img.total} linhas${img.active ? '' : ' · terminada'}` : 'Sem imagem';
     $('imgInfo').textContent = `${cur} · FAX: ${fax} · SSTV: ${sstv} · ${clock}`;
     const isFax = img.title.startsWith('FAX');
-    $('faxHint').hidden = !isFax;
+    $('faxHint').hidden = !isFax || rot !== 0;
     imgCv.style.cursor = isFax ? 'crosshair' : '';
   }
 
@@ -617,6 +618,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     if (old.width === img.w && old.height) imgCtx.drawImage(old, 0, 0);
     imgCv.style.aspectRatio = `${img.w} / ${Math.max(1, h * img.aspect)}`;
     imgCv.hidden = !h;
+    queueView();
   }
 
   // Returns true when the board holds more lines than this reply carried.
@@ -644,6 +646,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
         out.data[o + 3] = 255;
       }
       imgCtx.putImageData(out, 0, row0);
+      queueView();
       img.next = first + n;
     }
     showImgInfo();
@@ -791,11 +794,54 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   $('faxStart').onclick = () => postConfig({ fax_start: 1 });
   $('imgStop').onclick = () => postConfig({ img_stop: 1 });
   $('imgClear').onclick = () => { img.base = img.next; imgResize(0); };
+  // Rotation (many charts are sent on their side): a second canvas shows the
+  // image at its real proportions, turned; the received canvas stays as is
+  // (lines keep arriving into it, and clicks on it align the FAX).
+  let rot = store.get('imgRot', 0);
+  const view = $('imgView');
+  let viewPending = false;
+
+  // The image at its real height, rotated by `rot`, drawn into canvas c.
+  function drawRotated(c) {
+    const w = imgCv.width, h = Math.max(1, Math.round(imgCv.height * img.aspect));
+    const side = rot % 180 !== 0;
+    c.width = side ? h : w; c.height = side ? w : h;
+    const ctx = c.getContext('2d');
+    ctx.save();
+    ctx.translate(c.width / 2, c.height / 2);
+    ctx.rotate(rot * Math.PI / 180);
+    ctx.drawImage(imgCv, -w / 2, -h / 2, w, h);
+    ctx.restore();
+  }
+
+  function renderView() {
+    viewPending = false;
+    const on = rot !== 0 && imgCv.height > 0;
+    view.hidden = !on;
+    imgCv.style.display = on ? 'none' : '';
+    if (on) drawRotated(view);
+  }
+
+  // At most twice a second: redrawing the whole image for every block of lines
+  // would be wasteful.
+  function queueView() {
+    if (rot === 0 || viewPending) { if (rot === 0) renderView(); return; }
+    viewPending = true;
+    setTimeout(renderView, 500);
+  }
+
+  $('imgRot').onclick = () => {
+    rot = (rot + 90) % 360;
+    store.set('imgRot', rot);
+    $('imgRot').textContent = rot ? `Rodar ↻ ${rot}°` : 'Rodar ↻';
+    renderView();
+  };
+  $('imgRot').textContent = rot ? `Rodar ↻ ${rot}°` : 'Rodar ↻';
+
   $('imgSave').onclick = () => {
     if (!imgCv.height) return;
-    const c = document.createElement('canvas');    // lines at their real height
-    c.width = img.w; c.height = Math.max(1, Math.round(imgCv.height * img.aspect));
-    c.getContext('2d').drawImage(imgCv, 0, 0, c.width, c.height);
+    const c = document.createElement('canvas');    // real height, as rotated on the page
+    drawRotated(c);
     const a = document.createElement('a');
     a.download = `${img.title.replace(/[^\w-]+/g, '_')}_${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '')}.png`;
     a.href = c.toDataURL('image/png'); a.click();
