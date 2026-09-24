@@ -8,6 +8,9 @@
 
 void sstv_init();
 
+// Measured DSP sample rate (Hz), used from the next image on.
+void sstv_set_sample_rate(float hz);
+
 void sstv_request_stop();    // from other tasks, applied on the next sstv_process()
 
 bool sstv_receiving();

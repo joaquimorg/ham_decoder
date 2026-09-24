@@ -79,6 +79,7 @@ void measure_rate()
     const bool first = measured_rate == 0.0f;
     measured_rate = (float)(rate_samples * 1e6 / us);
     fax_set_sample_rate(measured_rate);
+    sstv_set_sample_rate(measured_rate);
     if (first || report_no % 600 == 0)
         ESP_LOGW(TAG, "taxa de amostragem medida: %.2f Hz (%+.0f ppm)", measured_rate,
                  (measured_rate / DSP_SAMPLE_RATE - 1.0f) * 1e6f);

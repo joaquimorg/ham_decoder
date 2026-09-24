@@ -13,8 +13,18 @@ MS = FS / 1000
 BLACK, WHITE = 1500.0, 2300.0
 BIN = FS // 1000
 VIS_BITS_END, VIS_TOL, VIS_RUN_MAX = 300, 70.0, 40
+VIS_MAX_OFF, VIS_LEADER_SD = 250.0, 150.0
 SYNC_MAX_HZ, WIN_SHARE, WIN_MAX_MS = 1350.0, 0.08, 30.0
-FIT_MIN, SLANT_MAX, MISS_MAX = 8, 0.005, 30
+FIT_MIN, SLANT_MAX = 8, 0.02
+PIX_MIN_HZ, PIX_MAX_HZ = 1400.0, 2400.0
+# Auto adjust (as slowrx): the image's frequency track is kept (1 byte per
+# sample, 6 Hz steps from 1000 Hz) and, at the end, the sync samples are folded
+# over candidate line lengths; the sharpest fold gives line length and start,
+# and the whole image is drawn again from the track.
+TRACK_HZ0, TRACK_STEP = 1000.0, 6.0
+SYNC_Q = int((SYNC_MAX_HZ - TRACK_HZ0) / TRACK_STEP)
+ADJ_MAX_SYNC = 20000                       # sync samples folded (subsampled above)
+GALLERY_MIN_ROWS = 32
 
 
 def pd(name, vis, w, lines, s):
@@ -60,7 +70,8 @@ def yuv_to_rgb(y, ry, by):
 
 class Sstv:
     def __init__(self):
-        self.images = []       # (mode name, rows x width x 3)
+        self.images = []       # (mode name, rows x width x 3), after the auto adjust
+        self.live = []         # the same, as drawn while receiving
         self.receiving = False
         self.run, self.run_code, self.run_first = 0, -1, 0
 
@@ -70,11 +81,14 @@ class Sstv:
             return -1
         b = self.bins
         seg = lambda from_end, n: b[e - from_end:e - from_end + n].mean()
-        el = lambda k: seg(VIS_BITS_END - 1 - 30 * k - 5, 20)
+        leader = b[e - (VIS_BITS_END + 250):e - (VIS_BITS_END + 250) + 200]
+        off = leader.mean() - 1900
+        if abs(off) > VIS_MAX_OFF or leader.var() > VIS_LEADER_SD ** 2:
+            return -1
+        el = lambda k: seg(VIS_BITS_END - 1 - 30 * k - 5, 20) - off
         if abs(el(0) - 1200) > VIS_TOL or abs(el(9) - 1200) > VIS_TOL:
             return -1
-        if abs(seg(VIS_BITS_END + 250, 200) - 1900) > VIS_TOL:
-            return -1
+        self.vis_off = off
         code = ones = 0
         for k in range(8):
             f = el(1 + k)
@@ -98,24 +112,103 @@ class Sstv:
             end_bin = self.run_first + (self.run - 1) // 2
             m = next((m for m in MODES if m['vis'] == self.run_code), None)
             self.run, self.run_code = 0, -1
-            if m:
-                self.begin(m, (end_bin + 1) * BIN)
+            if m and self.vis_at(end_bin) >= 0:
+                self.begin(m, (end_bin + 1) * BIN, self.vis_off)
 
     # --- image
     def end(self):
         if self.receiving:
+            self.live.append((self.mode['name'], np.array(self.rows)))
+            if len(self.rows) >= GALLERY_MIN_ROWS and self.adjust():
+                self.render_all()
             self.images.append((self.mode['name'], np.array(self.rows)))
         self.receiving = False
 
-    def begin(self, m, vis_end):
+    def track(self):
+        """Quantised frequency track from the VIS end to the samples received."""
+        t0 = int(self.t0)
+        h = self.h[t0:self.count_now]
+        return t0, np.clip(np.round((h - TRACK_HZ0) / TRACK_STEP), 0, 255).astype(np.uint8)
+
+    def fold(self, sync, L, ln):
+        ph = sync - L * np.floor(sync / L)
+        nb = int(np.ceil(L))
+        hist = np.bincount(np.minimum(ph.astype(np.int64), nb - 1), minlength=nb).astype(float)
+        c = np.concatenate((hist, hist[:ln]))
+        win = np.convolve(c, np.ones(ln), 'valid')[:nb]
+        k = int(np.argmax(win))
+        return win[k], k
+
+    def adjust(self):
+        m = self.mode
+        t0, q = self.track()
+        sync = np.nonzero(q <= SYNC_Q)[0].astype(float)
+        if len(sync) < 10:
+            return False
+        if len(sync) > ADJ_MAX_SYNC:
+            sync = sync[::int(np.ceil(len(sync) / ADJ_MAX_SYNC))]
+        ln = int(m['sync_len_ms'] * MS)
+        lines = max(self.line_no, 1)
+        step = max(ln / lines, 0.05)
+        lo, hi = self.b_nom * (1 - SLANT_MAX), self.b_nom * (1 + SLANT_MAX)
+        best = (-1, 0, 0)
+        for L in np.arange(lo, hi, step):
+            sc, k = self.fold(sync, L, ln)
+            if sc > best[0]:
+                best = (sc, L, k)
+        L0 = best[1]
+        for L in np.arange(L0 - step, L0 + step, step / 10):
+            sc, k = self.fold(sync, L, ln)
+            if sc > best[0]:
+                best = (sc, L, k)
+        _, L, k = best
+        phase = (k - m['sync_ms'] * MS) % L          # line start, mod L, from t0
+        self.b = L
+        self.a = (t0 - self.t0) + phase + L * round((self.a0 - (t0 - self.t0) - phase) / L)
+        self.adj = (L / self.b_nom - 1, self.a)
+        self.hq_t0, self.hq = t0, TRACK_HZ0 + TRACK_STEP * q.astype(float)
+        return True
+
+    def render_all(self):
+        """Draws every line again from the track with the adjusted a, b."""
+        m = self.mode
+        hp = np.clip(self.hq, PIX_MIN_HZ, PIX_MAX_HZ)
+        cum = np.concatenate(([0.0], np.cumsum(hp)))
+        base = self.hq_t0
+        def mh(frm, to):
+            i = np.ceil(frm).astype(np.int64) - base
+            e = np.ceil(to).astype(np.int64) - base
+            ok = (i >= 0) & (e <= len(hp))
+            i, e = np.clip(i, 0, len(hp)), np.clip(e, 0, len(hp))
+            out = (cum[e] - cum[i]) / np.maximum(e - i, 1)
+            empty = e <= i
+            out[empty] = hp[np.clip(np.round(frm[empty]).astype(np.int64) - base, 0, len(hp) - 1)]
+            return out
+        saved = self.mean_hz
+        self.mean_hz = mh
+        n = self.line_no
+        self.rows = []
+        self.ry_last = np.full(m['width'], 128.0)
+        self.by_last = np.full(m['width'], 128.0)
+        for k in range(n):
+            self.render_line(k)
+        self.mean_hz = saved
+
+    def begin(self, m, vis_end, off=0.0):
         self.end()
+        self.foff = off
+        # The image is judged against the tuning offset measured on the VIS.
+        self.h = self.h_raw - off
+        self.cum = np.concatenate(([0.0], np.cumsum(self.h)))
+        self.hp = np.clip(self.h, PIX_MIN_HZ, PIX_MAX_HZ)
+        self.cump = np.concatenate(([0.0], np.cumsum(self.hp)))
         self.mode = m
         self.receiving = True
         self.line_no, self.missed = 0, 0
         self.rows = []
         self.t0 = vis_end
         self.b_nom = self.b = m['line_ms'] * MS
-        self.a = m['first_ms'] * MS
+        self.a = self.a0 = m['first_ms'] * MS
         self.sk = self.st = self.skk = self.skt = 0.0
         self.n_fit = 0
         self.ry_last = np.full(m['width'], 128.0)
@@ -123,11 +216,11 @@ class Sstv:
 
     def mean_hz(self, frm, to):
         i, e = np.ceil(frm).astype(np.int64), np.ceil(to).astype(np.int64)
-        cs = self.cum
+        cs = self.cump
         out = (cs[e] - cs[i]) / np.maximum(e - i, 1)
         empty = e <= i
         if np.any(empty):
-            out[empty] = self.h[np.round(frm[empty]).astype(np.int64)]
+            out[empty] = self.hp[np.round(frm[empty]).astype(np.int64)]
         return out
 
     def read_channel(self, ls, start_ms, scan_ms):
@@ -164,7 +257,14 @@ class Sstv:
     def decode_line(self):
         m = self.mode
         self.track_sync(self.line_no)
-        ls = self.t0 + self.a + self.b * self.line_no
+        self.render_line(self.line_no)
+        self.line_no += 1
+        if self.line_no >= m['lines']:
+            self.end()
+
+    def render_line(self, k):
+        m = self.mode
+        ls = self.t0 + self.a + self.b * k
         rc = lambda c, scan: self.read_channel(ls, m['ch'][c], scan)
         if m['kind'] == 'RGB':
             g, b, r = rc(0, m['scan_ms']), rc(1, m['scan_ms']), rc(2, m['scan_ms'])
@@ -184,9 +284,6 @@ class Sstv:
             y0, ry, by, y1 = (rc(c, m['scan_ms']) for c in range(4))
             self.rows.append(yuv_to_rgb(y0, ry, by))
             self.rows.append(yuv_to_rgb(y1, ry, by))
-        self.line_no += 1
-        if self.line_no >= m['lines'] or self.missed >= MISS_MAX:
-            self.end()
 
     def line_ready(self, count):
         m = self.mode
@@ -194,15 +291,19 @@ class Sstv:
         return count > self.t0 + self.a + self.b * self.line_no + self.b + win + 2
 
     def process(self, hz):
-        self.h = np.clip(hz, 0, 4000).astype(np.int16).astype(float)
+        self.h = self.h_raw = np.clip(hz, 0, 4000).astype(np.int16).astype(float)
         self.cum = np.concatenate(([0.0], np.cumsum(self.h)))
+        self.hp = np.clip(self.h, PIX_MIN_HZ, PIX_MAX_HZ)       # pixels: FM clicks limited
+        self.cump = np.concatenate(([0.0], np.cumsum(self.hp)))
         nb = len(self.h) // BIN
         self.bins = self.h[:nb * BIN].reshape(nb, BIN).mean(1)
         for k in range(nb):
             self.vis_bin(k)
             count = (k + 1) * BIN
+            self.count_now = count
             while self.receiving and self.line_ready(count):
                 self.decode_line()
+        self.count_now = len(self.h)
         self.end()
 
 
@@ -336,7 +437,8 @@ def selftest():
     # Slant (transmitter clock off by 0.1..0.2%) and noise (the error is then
     # mostly noise in the pixels, not misalignment).
     for name, snr, clock, max_err in [('Martin M1', 10.0, 1.0, 25), ('Scottie S1', 30.0, 1.002, 10),
-                                      ('PD120', 30.0, 0.998, 12), ('Robot 36', 12.0, 1.001, 36)]:
+                                      ('PD120', 30.0, 0.998, 12), ('Robot 36', 12.0, 1.001, 36),
+                                      ('Martin M2', 15.0, 1.008, 25), ('Robot 36', 20.0, 0.988, 25)]:
         rows = BY_NAME[name]['lines'] * (2 if BY_NAME[name]['kind'] == 'PD' else 1)
         err, n = run_case(name, snr, clock)
         ok &= n == rows and err < max_err

@@ -38,8 +38,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 16px; display: grid; gap: 16p
 .metric .v.clip { color: var(--bad); }
 .scope { position: relative; }
 canvas { display: block; width: 100%; background: #000; border-radius: 6px; }
-#spec { height: 150px; }
-#wf { height: 300px; margin-top: 4px; cursor: crosshair; image-rendering: auto; }
+#wf { height: 300px; cursor: crosshair; image-rendering: auto; }
 .axis { position: relative; height: 18px; font: 11px var(--mono); color: var(--muted); }
 .axis span { position: absolute; transform: translateX(-50%); }
 .marker { position: absolute; top: 0; bottom: 18px; width: 0; border-left: 2px dashed var(--accent);
@@ -140,9 +139,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   </section>
 
   <section class="card">
-    <h2>Espectro e waterfall</h2>
+    <h2>Waterfall</h2>
     <div class="scope" id="scope">
-      <canvas id="spec"></canvas>
       <canvas id="wf"></canvas>
       <div class="axis" id="axis"></div>
       <div class="marker" id="marker"></div>
@@ -329,14 +327,13 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 (() => {
   const BINS = 300;
   const $ = id => document.getElementById(id);
-  const spec = $('spec'), wf = $('wf');
-  const sctx = spec.getContext('2d'), wctx = wf.getContext('2d');
+  const wf = $('wf');
+  const wctx = wf.getContext('2d');
   wf.width = BINS; wf.height = 300;
   const rowImg = wctx.createImageData(BINS, 1);
 
   let binHz = 12000 / 1024, rSeq = 0, tSeq = 0, uSeq = 0, first = true;
   let rtty = { mark: 0, space: 0 };
-  let avg = new Float32Array(BINS).fill(-120);
   let cfg = { auto: true, manual: 700, contrast: 5 };
   let tone = 0;
 
@@ -384,37 +381,6 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       rowImg.data[i * 4 + 2] = lut[v * 3 + 2]; rowImg.data[i * 4 + 3] = 255;
     }
     wctx.putImageData(rowImg, 0, 0);
-    for (let i = 0; i < BINS; i++) avg[i] += (row[i] - avg[i]) * 0.3;
-  }
-
-  function drawSpectrum() {
-    const dpr = window.devicePixelRatio || 1;
-    const w = spec.clientWidth * dpr, h = spec.clientHeight * dpr;
-    if (spec.width !== w || spec.height !== h) { spec.width = w; spec.height = h; }
-    sctx.clearRect(0, 0, w, h);
-    const top = 0, bottom = -130;
-    const y = db => (db - top) / (bottom - top) * h;
-    sctx.strokeStyle = 'rgba(255,255,255,.08)'; sctx.lineWidth = 1;
-    sctx.font = (10 * dpr) + 'px monospace'; sctx.fillStyle = 'rgba(255,255,255,.35)';
-    for (let db = -20; db > bottom; db -= 20) {
-      sctx.beginPath(); sctx.moveTo(0, y(db)); sctx.lineTo(w, y(db)); sctx.stroke();
-      sctx.fillText(db + ' dB', 4 * dpr, y(db) - 3 * dpr);
-    }
-    for (let f = 500; f < maxHz(); f += 500) {
-      const x = f / maxHz() * w;
-      sctx.beginPath(); sctx.moveTo(x, 0); sctx.lineTo(x, h); sctx.stroke();
-    }
-    const grad = sctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, 'rgba(63,185,80,.55)'); grad.addColorStop(1, 'rgba(63,185,80,0)');
-    sctx.beginPath(); sctx.moveTo(0, h);
-    for (let i = 0; i < BINS; i++) sctx.lineTo((i + .5) / BINS * w, y(avg[i]));
-    sctx.lineTo(w, h); sctx.closePath(); sctx.fillStyle = grad; sctx.fill();
-    sctx.beginPath();
-    for (let i = 0; i < BINS; i++) {
-      const x = (i + .5) / BINS * w;
-      i ? sctx.lineTo(x, y(avg[i])) : sctx.moveTo(x, y(avg[i]));
-    }
-    sctx.strokeStyle = '#3fb950'; sctx.lineWidth = 1.5 * dpr; sctx.stroke();
   }
 
   function place(el, f) {
@@ -459,7 +425,6 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     if (first) { buildAxis(); first = false; }
     if (d.rows) {
       for (const r of d.rows) drawRow(decodeRow(r));
-      if (d.rows.length) drawSpectrum();
     }
     rSeq = d.r;
 
@@ -522,7 +487,6 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       for (let i = 0; i < BINS; i++) row[i] = v[o + i] / 2 - 120;
       drawRow(row);
     }
-    if (n) drawSpectrum();
   }
 
   // Live data over a WebSocket (the board pushes every 250 ms). Reconnects on
@@ -822,12 +786,11 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     } catch (e) { $('wifiMsg').textContent = 'Erro ao guardar.'; }
   };
 
-  window.addEventListener('resize', drawSpectrum);
   connectWs();
   pollImg();
   pollFtx();
 
-  // Tabs: one mode at a time under the spectrum; the choice is kept in this
+  // Tabs: one mode at a time under the waterfall; the choice is kept in this
   // browser. A dot marks tabs with something being decoded.
   function showTab(name) {
     for (const b of document.querySelectorAll('#tabs button')) b.classList.toggle('on', b.dataset.tab === name);
