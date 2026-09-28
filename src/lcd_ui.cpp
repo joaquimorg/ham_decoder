@@ -556,7 +556,10 @@ static void update_ftx()
 // ---------------------------------------------------------------------------
 // Image (FAX / SSTV)
 
-static bool img_zoom = false;           // fit width, newest lines (else whole image)
+// FAX (grey) by default: full width, newest lines at the bottom (a long
+// chart scrolls up). SSTV (colour, short) by default: the whole image. A tap
+// swaps the two views.
+static bool img_swap = false;
 static uint32_t img_drawn_id = 0, img_drawn_lines = 0;
 static int64_t img_drawn_us = 0;
 
@@ -584,7 +587,8 @@ static void render_image(bool force)
     if (held > 0) {
         float scale;
         uint32_t first = info.first;
-        if (img_zoom) {
+        const bool scroll = (info.channels == 1) != img_swap;
+        if (scroll) {
             scale = (float)LCD_H_RES / info.width;
             const uint32_t fit = (uint32_t)(IMG_H / (aspect * scale));
             if (held > fit)
@@ -628,7 +632,7 @@ static void render_image(bool force)
 
 static void image_event(lv_event_t *)
 {
-    img_zoom = !img_zoom;
+    img_swap = !img_swap;
     render_image(true);
 }
 

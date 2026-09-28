@@ -63,7 +63,8 @@ Só na Freenove FNK0104S (`LCD_UI` em `config.h`). Ecrã em paisagem, com uma ba
 - **Texto:** as últimas 25 linhas de CW e de RTTY, cada canal com um botão **Limpar**.
 - **FT8:** o modo (Desligado / FT8 / FT4), o estado e as mensagens, com as mais recentes no topo (ficam 50).
 - **Imagem:** a imagem FAX/SSTV em curso, com os botões **FAX** (iniciar agora) e **Parar**.
-  - Tocar na imagem alterna entre a imagem inteira e a largura toda com as linhas mais recentes.
+  - O FAX ocupa a largura toda: as linhas mais recentes ficam em baixo e as antigas saem por cima. O SSTV aparece inteiro.
+  - Tocar na imagem troca entre as duas vistas (largura toda / imagem inteira).
 - **⚙ Definições:**
   - idioma (**Português / English**, muda logo);
   - CW, RTTY, FAX e SSTV (as mesmas da página web);
