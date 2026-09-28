@@ -1,10 +1,48 @@
 # Hardware notes
 
+## Freenove FNK0104S (placa final)
+
+Placa ESP32-S3 com ecrã de 4". Esquema: [4.0inch_ESP32-S3_Display_Schematic.pdf](4.0inch_ESP32-S3_Display_Schematic.pdf).
+Documentação da Freenove: <https://github.com/Freenove/Freenove_ESP32_S3_Display>.
+
+- **MCU:** ESP32-S3R8 (8 MB de PSRAM octal no chip) com 16 MB de flash quad (lida com `esptool flash_id`). A memória é igual à da N16R8, por isso as partições e a PSRAM são as mesmas.
+- **USB-C:** é o USB nativo do ESP32-S3 (USB-Serial/JTAG) e não tem conversor UART. A consola vai por aí (`sdkconfig.defaults.fnk0104s`). O UART0 está no header P2.
+- **Botões:** KEY1 = RESET, KEY2 = BOOT (GPIO0).
+
+| Função | GPIO | Notas |
+|---|---|---|
+| LCD ST7796 (SPI) | SCK 12, MOSI 11, MISO 13, CS 10, DC 46 | 80 MHz; inversão de cores ligada; ordem BGR; o RESET do LCD está ligado ao EN do chip (só reset por software) |
+| Retroiluminação | 45 | ativa alta (BSS138); PWM a 24 kHz |
+| Touch FT6336U (I2C 0x38) | SDA 16, SCL 15, INT 17, RST 18 | mesmo barramento I2C do ES8311 |
+| Codec ES8311 (I2C 0x18) | MCLK 4, BCLK 5, LRCK 7, dados do ADC → ESP **6**, ESP → DAC **8** | ainda não usado |
+| Amplificador SC8002B | 1 (AUDIO_EN) | **ativo baixo**; o pull-up de 10 kΩ mantém-no desligado |
+| Microfone MEMS | MIC1P do ES8311 | através de L3 (0 Ω) e C37 |
+| Cartão SD (SDMMC 4 bits) | CLK 38, CMD 40, D0 39, D1 41, D2 48, D3 47 | ainda não usado |
+| LED RGB WS2812 | 42 | ainda não usado |
+| Bateria (divisor ×2) | 9 (ADC1) | ainda não usado |
+| **Entrada de áudio atual** | **2** (ADC1_CH1) | header **P3 pino 1** (IO2) |
+| Livres | 3, 14, 21 | header P3; I2C no P4 |
+
+GPIO45 e GPIO46 são pinos de strapping, mas a placa já os usa (retroiluminação com pull-down e DC do LCD), por isso não é preciso nenhum cuidado. Basta não os aproveitar para outra coisa.
+
+**Memória interna:** com o LCD, o Wi-Fi e o servidor web a RAM interna esgotava-se: a tarefa do servidor não arrancava e a placa entrava num ciclo de reinícios. Agora ficam na PSRAM o heap do LVGL (`lv_malloc_core` em `lcd_ui.cpp`) e os buffers do Wi-Fi/LWIP (`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`). Na RAM interna ficam os dois buffers DMA de 20 linhas do LCD.
+
+### Próximo passo: áudio pelo ES8311
+
+O codec tem ADC de 24 bits e PGA de 0 a 42 dB, com alimentação e massa analógicas próprias. Deve sofrer muito menos com o Wi-Fi do que o ADC interno.
+
+Para o usar com o rádio é preciso mexer na placa:
+
+1. Tirar o **L3 (0 Ω)** para desligar o microfone.
+2. Injetar o áudio no pad do lado do **C37**, com um atenuador. O nível máximo de entrada ainda está por confirmar.
+
+No firmware, falta um `es8311_source.cpp` com a mesma interface `audio_source_*`. Pode partir da base I2S do `pcm1808_source.cpp` e configurar o codec por I2C.
+
 A fonte de áudio escolhe-se em `include/config.h` com `AUDIO_SOURCE`: `AUDIO_SRC_ADC` (por omissão) ou `AUDIO_SRC_PCM1808`.
 
 ## Entrada de áudio: ADC interno (atual)
 
-Fonte por omissão (`AUDIO_SOURCE AUDIO_SRC_ADC`). Com a gravação W1AW a 30 wpm tocada num telemóvel, o espetro fica limpo (SNR ~40 dB, sem harmónicas) e o CW é descodificado sem erros.
+Fonte por omissão (`AUDIO_SOURCE AUDIO_SRC_ADC`). O pino é o **GPIO2** na Freenove (header P3) e o **GPIO1** na DevKitC; nos esquemas abaixo, GPIO1 corresponde ao pino da placa usada. Com a gravação W1AW a 30 wpm tocada num telemóvel, o espetro fica limpo (SNR ~40 dB, sem harmónicas) e o CW é descodificado sem erros.
 
 ```text
                  C1 1 µF
@@ -62,7 +100,9 @@ Sem estas resistências, os flancos dos clocks oscilam e o PCM1808 perde a sincr
 - **Suspeita:** o próprio chip, por exemplo um PCM1808 falsificado. Para qualidade final, usar um ADC de origem fiável.
 - **Contorno no firmware:** com `PCM_GLITCH_FIX 1`, as amostras que saltam mais de 2²⁰ em relação às duas vizinhas são corrigidas. O firmware mantém os 16 bits de baixo e escolhe o byte do topo que encaixa no sinal. A cada 5 s, o monitor mostra a contagem e alguns exemplos.
 
-## ESP32-S3 DevKitC-1 N16R8
+## ESP32-S3 DevKitC-1 N16R8 (alternativa, sem LCD)
+
+Ambiente `esp32-s3-devkitc-1`: `pio run -e esp32-s3-devkitc-1 -t upload`.
 
 Com as portas USB viradas para baixo, o PCM1808 liga ao header **J1** (lado esquerdo) e o GPIO1 do ADC interno fica no header **J3** (lado direito): G, TX, RX, **1**, 2, ...
 
