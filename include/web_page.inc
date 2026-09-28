@@ -673,7 +673,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   }
 
   // FT8/FT4: messages fetched from /api/ftx, newest on top.
-  const FTX_ROWS = 200;
+  const FTX_ROWS = 50;
   let ftxSeq = 0, ftxMode = 0, lastTimeSend = 0;
 
   function showFtx(d) {

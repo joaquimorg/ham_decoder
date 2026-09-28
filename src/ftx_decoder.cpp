@@ -12,7 +12,7 @@
 #include "esp_log.h"
 
 #include "config.h"
-#include "web_ui.h"
+#include "ui_hub.h"
 
 static const char *TAG = "FTX";
 
@@ -32,7 +32,7 @@ constexpr time_t TIME_VALID = 1704067200;
 
 void on_message(const FtxMessage &m, void *)
 {
-    web_push_ftx(m);
+    ui_push_ftx(m);
 }
 
 void decode_task(void *)

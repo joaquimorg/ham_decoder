@@ -12,7 +12,7 @@
 #include "esp_log.h"
 
 #include "config.h"
-#include "web_ui.h"
+#include "ui_hub.h"
 
 // Algorithm mirrored and validated off-target in tools/sstv_sim.py. Keep both
 // in sync.
@@ -133,7 +133,7 @@ uint16_t *fold_hist = nullptr;      // one bin per sample of a line
 const Mode *mode = nullptr;
 const Mode *last_mode = nullptr;
 bool receiving = false;
-uint32_t web_id = 0;
+uint32_t img_id = 0;
 int line_no = 0, rows_sent = 0, missed = 0;
 double t0 = 0.0;                // VIS end (sample), origin of the fit
 double a = 0.0, b = 0.0;        // line k starts at t0 + a + b*k
@@ -308,10 +308,10 @@ void end_image()
         if (adjust_on && auto_adjust()) {
             // Draw it all again as a new web image (replaces the live one).
             const int lines = line_no;
-            web_image_end(web_id);
+            ui_image_end(img_id);
             char title[40];
             snprintf(title, sizeof(title), "SSTV %s", mode->name);
-            web_id = web_image_begin(title, mode->width, 3, 1.0f);
+            img_id = ui_image_begin(title, mode->width, 3, 1.0f);
             rows_sent = 0;
             for (int i = 0; i < MAX_W; i++)
                 ry_last[i] = by_last[i] = 128;
@@ -322,9 +322,9 @@ void end_image()
             ESP_LOGW(TAG, "%s: sintonia %+.0f Hz, ajuste %+.3f%%, %d ms", mode->name, foff,
                      (b / b_nom - 1.0) * 100.0, (int)((esp_timer_get_time() - t_start) / 1000));
         }
-        web_image_archive(web_id);
+        ui_image_archive(img_id);
     }
-    web_image_end(web_id);
+    ui_image_end(img_id);
 }
 
 void begin_image(const Mode *m, double vis_end, float offset)
@@ -333,7 +333,7 @@ void begin_image(const Mode *m, double vis_end, float offset)
     mode = last_mode = m;
     char title[32];
     snprintf(title, sizeof(title), "SSTV %s", m->name);
-    web_id = web_image_begin(title, m->width, 3, 1.0f);
+    img_id = ui_image_begin(title, m->width, 3, 1.0f);
     receiving = true;
     line_no = rows_sent = missed = 0;
     t0 = vis_end;
@@ -402,7 +402,7 @@ void send_yuv(const uint8_t *y, const uint8_t *ry, const uint8_t *by)
         for (int k = 0; k < 3; k++)
             rgb[j * 3 + k] = c[k] <= 0.0f ? 0 : c[k] >= 255.0f ? 255 : (uint8_t)(c[k] + 0.5f);
     }
-    web_image_line(web_id, rgb);
+    ui_image_line(img_id, rgb);
     rows_sent++;
 }
 
@@ -470,7 +470,7 @@ void render_line(int k)
             rgb[j * 3 + 1] = ch_buf[0][j];
             rgb[j * 3 + 2] = ch_buf[1][j];
         }
-        web_image_line(web_id, rgb);
+        ui_image_line(img_id, rgb);
         rows_sent++;
         break;
     case R36: {

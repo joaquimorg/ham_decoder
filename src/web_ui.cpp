@@ -1,4 +1,8 @@
 #include "web_ui.h"
+#include "ui_hub.h"
+#include "config.h"
+
+#if WEB_UI
 
 #include <stdio.h>
 #include <string.h>
@@ -35,222 +39,10 @@ static const char *TAG = "WEB";
 
 #include "web_page.inc"    // const char WEB_PAGE[]
 
-// ---------------------------------------------------------------------------
-// Shared state (analysis task writes, HTTP task reads), guarded by `lock`.
-
-#define ROWS 64                 // ~5 s of spectrum rows at ~12 rows/s
-#define TEXT_RING 2048
-
-static SemaphoreHandle_t lock;
-
-EXT_RAM_BSS_ATTR static uint8_t rows[ROWS][WEB_BINS];
-static uint32_t row_seq = 0;    // number of rows ever pushed
-
-struct TextRing {
-    char buf[TEXT_RING];
-    uint32_t seq = 0;           // number of characters ever pushed
-};
-static TextRing texts[2];       // WebTextChannel: CW, RTTY
-
-static WebStatus status;
-static volatile float analysis_load = 0.0f;
-static const char *boot_reason = "";
-static bool boot_unexpected = false;
-static unsigned boot_resets = 0;
-
-void web_set_boot_info(const char *reason, bool unexpected, unsigned resets)
-{
-    boot_reason = reason;
-    boot_unexpected = unexpected;
-    boot_resets = resets;
-}
-
-void web_set_load(float fraction)
-{
-    analysis_load = fraction;
-}
-
-void web_push_spectrum(const uint8_t *row)
-{
-    if (!lock)
-        return;
-    xSemaphoreTake(lock, portMAX_DELAY);
-    memcpy(rows[row_seq % ROWS], row, WEB_BINS);
-    row_seq++;
-    xSemaphoreGive(lock);
-}
-
-void web_push_status(const WebStatus &st)
-{
-    if (!lock)
-        return;
-    xSemaphoreTake(lock, portMAX_DELAY);
-    status = st;
-    xSemaphoreGive(lock);
-}
-
-void web_push_text(WebTextChannel ch, const char *text)
-{
-    if (!lock || !text[0])
-        return;
-    TextRing &t = texts[ch];
-    xSemaphoreTake(lock, portMAX_DELAY);
-    for (const char *p = text; *p; p++)
-        t.buf[t.seq++ % TEXT_RING] = *p;
-    xSemaphoreGive(lock);
-}
-
-// Image lines: a ring in PSRAM when there is some (a whole FAX chart fits), so
-// a page opened mid-image still gets it all; a small one in internal RAM
-// otherwise. `img_id` changes with every new image.
-#define IMG_RING_PSRAM (1536 * 1024)
-#define IMG_RING_RAM   (24 * 1024)
-#define IMG_TITLE      32
-
-static uint8_t *img_ring = nullptr;
-static size_t img_ring_bytes = 0;
-static uint32_t img_id = 0, img_lines = 0, img_cap = 0;
-static uint16_t img_width = 0;
-static uint8_t img_channels = 1;
-static bool img_active = false;
-static float img_aspect = 1.0f;
-static char img_title[IMG_TITLE] = "";
-
-static void image_alloc()
-{
-    img_ring = (uint8_t *)heap_caps_malloc(IMG_RING_PSRAM, MALLOC_CAP_SPIRAM);
-    img_ring_bytes = IMG_RING_PSRAM;
-    if (!img_ring) {
-        img_ring = (uint8_t *)malloc(IMG_RING_RAM);
-        img_ring_bytes = img_ring ? IMG_RING_RAM : 0;
-    }
-    ESP_LOGI(TAG, "imagem: %u KB", (unsigned)(img_ring_bytes / 1024));
-}
-
-uint32_t web_image_begin(const char *title, int width, int channels, float aspect)
-{
-    if (!lock || !img_ring || width * channels > WEB_IMG_MAX_LINE)
-        return 0;
-    xSemaphoreTake(lock, portMAX_DELAY);
-    const uint32_t id = ++img_id;
-    img_lines = 0;
-    img_width = width;
-    img_channels = channels;
-    img_cap = img_ring_bytes / (width * channels);
-    img_aspect = aspect;
-    img_active = true;
-    strlcpy(img_title, title, sizeof(img_title));
-    xSemaphoreGive(lock);
-    return id;
-}
-
-void web_image_line(uint32_t id, const uint8_t *px)
-{
-    if (!lock || !img_ring || !id)
-        return;
-    xSemaphoreTake(lock, portMAX_DELAY);
-    if (id == img_id && img_active) {
-        const size_t bytes = img_width * img_channels;
-        memcpy(img_ring + (img_lines % img_cap) * bytes, px, bytes);
-        img_lines++;
-    }
-    xSemaphoreGive(lock);
-}
-
-uint32_t web_image_rotate(uint32_t id, int px)
-{
-    if (!lock || !img_ring)
-        return id;
-    xSemaphoreTake(lock, portMAX_DELAY);
-    if (id == img_id && img_width > 0) {
-        px = ((px % img_width) + img_width) % img_width;
-        const size_t bytes = (size_t)img_width * img_channels, cut = (size_t)px * img_channels;
-        static uint8_t tmp[WEB_IMG_MAX_LINE];
-        const uint32_t held = img_lines < img_cap ? img_lines : img_cap;
-        for (uint32_t k = img_lines - held; k < img_lines && cut; k++) {
-            uint8_t *line = img_ring + (k % img_cap) * bytes;
-            memcpy(tmp, line, cut);
-            memmove(line, line + cut, bytes - cut);
-            memcpy(line + bytes - cut, tmp, cut);
-        }
-        id = ++img_id;
-    }
-    xSemaphoreGive(lock);
-    return id;
-}
-
-void web_image_end(uint32_t id)
-{
-    if (!lock)
-        return;
-    xSemaphoreTake(lock, portMAX_DELAY);
-    if (id == img_id)
-        img_active = false;
-    xSemaphoreGive(lock);
-}
-
-// Gallery: the last WEB_GALLERY finished images (SSTV), each in its own
-// PSRAM buffer. `gal_seq` numbers them; a slot is reused for the newest.
-struct GalleryImg {
-    uint32_t n = 0;             // gal_seq when stored, 0 = empty
-    uint8_t *px = nullptr;
-    uint16_t w = 0, h = 0;
-    int64_t utc = 0;            // reception time (0 = clock not set)
-    char title[IMG_TITLE] = "";
-};
-static GalleryImg gallery[WEB_GALLERY];
-static uint32_t gal_seq = 0;
-
-void web_image_archive(uint32_t id)
-{
-    if (!lock || !img_ring)
-        return;
-    xSemaphoreTake(lock, portMAX_DELAY);
-    if (id == img_id && img_channels == 3 && img_lines > 0 && img_lines <= img_cap) {
-        const size_t bytes = (size_t)img_width * 3;
-        uint8_t *px = (uint8_t *)heap_caps_malloc(bytes * img_lines, MALLOC_CAP_SPIRAM);
-        if (px) {
-            GalleryImg &g = gallery[gal_seq % WEB_GALLERY];
-            free(g.px);
-            memcpy(px, img_ring, bytes * img_lines);    // lines 0..n-1 sit at the ring start
-            g.px = px;
-            g.w = img_width;
-            g.h = img_lines;
-            const time_t now = time(nullptr);
-            g.utc = now > 1704067200 ? now : 0;
-            strlcpy(g.title, img_title, sizeof(g.title));
-            g.n = ++gal_seq;
-        }
-    }
-    xSemaphoreGive(lock);
-}
-
-// FT8/FT4 messages: ring of the last FTX_RING, numbered by `ftx_seq`.
-#define FTX_RING 64
-EXT_RAM_BSS_ATTR static FtxMessage ftx_ring[FTX_RING];
-static uint32_t ftx_seq = 0;
-
-void web_push_ftx(const FtxMessage &m)
-{
-    if (!lock)
-        return;
-    xSemaphoreTake(lock, portMAX_DELAY);
-    ftx_ring[ftx_seq++ % FTX_RING] = m;
-    xSemaphoreGive(lock);
-}
-
-// Copies the characters of ring `t` from sequence `from` on (clamped to what
-// the ring still holds; a new client gets the last 512). Returns the count.
-static int snapshot_text(const TextRing &t, uint32_t from, char *out)
-{
-    if (from > t.seq || t.seq - from > TEXT_RING)
-        from = t.seq > 512 ? t.seq - 512 : 0;
-    const int n = t.seq - from;
-    for (int i = 0; i < n; i++)
-        out[i] = t.buf[(from + i) % TEXT_RING];
-    out[n] = 0;
-    return n;
-}
+#define ROWS 64                 // spectrum rows a client can get at once
+#define TEXT_RING UI_TEXT_RING
+#define FTX_RING UI_FTX_RING
+#define IMG_TITLE 32
 
 // ---------------------------------------------------------------------------
 // Wi-Fi
@@ -463,51 +255,42 @@ static int wifi_rssi()
 struct Snapshot {
     uint32_t rseq, tseq, useq;    // sequence numbers after these rows/text
     int nrows;
-    uint8_t rows[ROWS][WEB_BINS];
+    uint8_t rows[ROWS][UI_BINS];
     char text[2][TEXT_RING + 1];
-    WebStatus st;
+    UiStatus st;
 };
 EXT_RAM_BSS_ATTR static Snapshot snap;    // used only from the HTTP server task
 
+// A new client (want_row 0) starts with the last 16 rows.
 static void take_snapshot(uint32_t want_row, uint32_t want_t, uint32_t want_u)
 {
-    xSemaphoreTake(lock, portMAX_DELAY);
-    snap.rseq = row_seq;
-    snap.tseq = texts[WEB_TEXT_CW].seq;
-    snap.useq = texts[WEB_TEXT_RTTY].seq;
-    uint32_t first_row = want_row;
-    if (first_row > snap.rseq || snap.rseq - first_row > ROWS)
-        first_row = snap.rseq > 16 ? snap.rseq - 16 : 0;    // new client or fell behind
-    snap.nrows = snap.rseq - first_row;
-    for (int i = 0; i < snap.nrows; i++)
-        memcpy(snap.rows[i], rows[(first_row + i) % ROWS], WEB_BINS);
-    snapshot_text(texts[WEB_TEXT_CW], want_t, snap.text[WEB_TEXT_CW]);
-    snapshot_text(texts[WEB_TEXT_RTTY], want_u, snap.text[WEB_TEXT_RTTY]);
-    snap.st = status;
-    xSemaphoreGive(lock);
+    snap.nrows = ui_get_rows(want_row, snap.rows, want_row ? ROWS : 16, &snap.rseq);
+    ui_get_text(UI_TEXT_CW, want_t, snap.text[UI_TEXT_CW], &snap.tseq);
+    ui_get_text(UI_TEXT_RTTY, want_u, snap.text[UI_TEXT_RTTY], &snap.useq);
+    snap.st = ui_get_status();
 }
 
 // JSON with status and text; with_rows adds the spectrum rows in base64
 // (polling fallback - the WebSocket sends them as a binary frame).
 static int format_json(bool with_rows, char *json, size_t cap)
 {
-    const WebStatus &st = snap.st;
+    const UiStatus &st = snap.st;
     int n = 0;
     n += snprintf(json + n, cap - n, "{\"r\":%" PRIu32 ",\"t\":%" PRIu32 ",\"u\":%" PRIu32,
                   snap.rseq, snap.tseq, snap.useq);
     if (with_rows) {
         n += snprintf(json + n, cap - n, ",\"rows\":[");
         for (int i = 0; i < snap.nrows; i++) {
-            char b64[WEB_BINS / 3 * 4 + 8];
-            base64_encode(snap.rows[i], WEB_BINS, b64);
+            char b64[UI_BINS / 3 * 4 + 8];
+            base64_encode(snap.rows[i], UI_BINS, b64);
             n += snprintf(json + n, cap - n, "%s\"%s\"", i ? "," : "", b64);
         }
         n += snprintf(json + n, cap - n, "]");
     }
     n += snprintf(json + n, cap - n, ",\"text\":");
-    n += json_str(json + n, cap - n, snap.text[WEB_TEXT_CW]);
+    n += json_str(json + n, cap - n, snap.text[UI_TEXT_CW]);
     n += snprintf(json + n, cap - n, ",\"rtext\":");
-    n += json_str(json + n, cap - n, snap.text[WEB_TEXT_RTTY]);
+    n += json_str(json + n, cap - n, snap.text[UI_TEXT_RTTY]);
     n += snprintf(json + n, cap - n, ",\"label\":");
     n += json_str(json + n, cap - n, st.label);
     n += snprintf(json + n, cap - n, ",\"ml\":");
@@ -527,12 +310,12 @@ static int format_json(bool with_rows, char *json, size_t cap)
                   st.rtty_mark_hz, st.rtty_space_hz, st.rtty_active ? "true" : "false",
                   g_settings.rtty_baud, g_settings.rtty_polarity,
                   (double)DSP_SAMPLE_RATE / FFT_SIZE, (uint32_t)(esp_timer_get_time() / 1000000),
-                  analysis_load * 100.0f, (unsigned)(esp_get_free_heap_size() / 1024),
+                  ui_load() * 100.0f, (unsigned)(esp_get_free_heap_size() / 1024),
                   wifi_rssi(), ip_str, ap_active ? "true" : "false");
     n += json_str(json + n, cap - n, g_settings.wifi_ssid);
     n += snprintf(json + n, cap - n, ",\"source\":\"%s\",\"boot\":",
                   AUDIO_SOURCE == AUDIO_SRC_ADC ? "ADC interno" : "PCM1808");
-    n += json_str(json + n, cap - n, boot_reason);
+    n += json_str(json + n, cap - n, ui_boot_reason());
     n += snprintf(json + n, cap - n,
                   ",\"fax_lpm\":%d,\"fax_ioc\":%d,\"fax_auto\":%s,\"fax_state\":%d,\"fax_lines\":%d",
                   g_settings.fax_lpm, g_settings.fax_ioc, g_settings.fax_auto ? "true" : "false",
@@ -543,14 +326,14 @@ static int format_json(bool with_rows, char *json, size_t cap)
     const float fs = analyzer_sample_rate();
     n += snprintf(json + n, cap - n, ",\"fs_ppm\":%.0f,\"fs_ok\":%s",
                   fs > 0.0f ? (fs / DSP_SAMPLE_RATE - 1.0f) * 1e6f : 0.0f, fs > 0.0f ? "true" : "false");
-    n += snprintf(json + n, cap - n, ",\"gal\":%" PRIu32 ",\"sstv_adjust\":%s", gal_seq,
+    n += snprintf(json + n, cap - n, ",\"gal\":%" PRIu32 ",\"sstv_adjust\":%s", ui_gallery_seq(),
                   g_settings.sstv_adjust ? "true" : "false");
     n += snprintf(json + n, cap - n,
                   ",\"ftx_mode\":%d,\"ftx_time\":%s,\"ftx_n\":%d,\"ftx_ms\":%d,\"ftx_lost\":%d,\"utc\":%lld",
                   g_settings.ftx_mode, ftx_time_ok() ? "true" : "false", ftx_last_count(), ftx_last_ms(),
                   ftx_core_skipped(), (long long)time(nullptr));
     n += snprintf(json + n, cap - n, ",\"boot_bad\":%s,\"resets\":%u}",
-                  boot_unexpected ? "true" : "false", boot_resets);
+                  ui_boot_unexpected() ? "true" : "false", ui_boot_resets());
     return n;
 }
 
@@ -602,41 +385,34 @@ static esp_err_t handle_img(httpd_req_t *req)
             want_line = strtoul(v, nullptr, 10);
     }
     uint8_t head[20 + IMG_TITLE] = {};
-    xSemaphoreTake(lock, portMAX_DELAY);
-    const uint32_t id = img_id, total = img_lines, cap = img_cap;
-    const size_t bytes = img_width * img_channels;
+    const UiImageInfo info = ui_get_image_info();
+    const uint32_t id = info.id, total = info.lines;
+    const size_t bytes = info.width * info.channels;
     uint32_t first = want_id == id ? want_line : 0;
     if (first > total)
         first = 0;
-    if (total - first > cap)
-        first = total - cap;
+    if (first < info.first)
+        first = info.first;
     memcpy(head, &id, 4);
     memcpy(head + 4, &first, 4);
     memcpy(head + 8, &total, 4);
-    memcpy(head + 12, &img_width, 2);
-    head[14] = img_channels;
-    head[15] = img_active;
-    memcpy(head + 16, &img_aspect, 4);
-    memcpy(head + 20, img_title, IMG_TITLE);
-    xSemaphoreGive(lock);
+    memcpy(head + 12, &info.width, 2);
+    head[14] = info.channels;
+    head[15] = info.active;
+    memcpy(head + 16, &info.aspect, 4);
+    memcpy(head + 20, info.title, IMG_TITLE);
 
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     esp_err_t err = httpd_resp_send_chunk(req, (const char *)head, sizeof(head));
-    // A few lines at a time: copied under the lock, sent without it.
-    EXT_RAM_BSS_ATTR static uint8_t buf[2 * WEB_IMG_MAX_LINE];    // HTTP server task only
+    // A few lines at a time: copied under the hub lock, sent without it.
+    EXT_RAM_BSS_ATTR static uint8_t buf[2 * UI_IMG_MAX_LINE];    // HTTP server task only
     const uint32_t max_lines = bytes ? (IMG_MAX_BYTES / bytes > 0 ? IMG_MAX_BYTES / bytes : 1) : 0;
     const uint32_t last = total - first > max_lines ? first + max_lines : total;
     const uint32_t per_send = bytes ? sizeof(buf) / bytes : 0;
     for (uint32_t k = first; k < last && err == ESP_OK;) {
         const uint32_t n = last - k < per_send ? last - k : per_send;
-        xSemaphoreTake(lock, portMAX_DELAY);
-        const bool held = img_id == id && img_lines - k <= img_cap;
-        if (held)
-            for (uint32_t j = 0; j < n; j++)
-                memcpy(buf + j * bytes, img_ring + ((k + j) % img_cap) * bytes, bytes);
-        xSemaphoreGive(lock);
-        if (!held)
+        if (!ui_get_image_lines(id, k, n, buf))
             break;    // overwritten meanwhile: the client asks again
         err = httpd_resp_send_chunk(req, (const char *)buf, n * bytes);
         k += n;
@@ -656,14 +432,8 @@ static esp_err_t handle_ftx(httpd_req_t *req)
         httpd_query_key_value(q, "s", v, sizeof(v)) == ESP_OK)
         want = strtoul(v, nullptr, 10);
     EXT_RAM_BSS_ATTR static FtxMessage msgs[FTX_RING];    // HTTP server task only
-    xSemaphoreTake(lock, portMAX_DELAY);
-    const uint32_t seq = ftx_seq;
-    if (want > seq || seq - want > FTX_RING)
-        want = seq > FTX_RING ? seq - FTX_RING : 0;
-    const int n = seq - want;
-    for (int i = 0; i < n; i++)
-        msgs[i] = ftx_ring[(want + i) % FTX_RING];
-    xSemaphoreGive(lock);
+    uint32_t seq;
+    const int n = ui_get_ftx(want, msgs, &seq);
 
     EXT_RAM_BSS_ATTR static char json[FTX_RING * 96 + 32];
     int o = snprintf(json, sizeof(json), "{\"s\":%" PRIu32 ",\"m\":[", seq);
@@ -683,20 +453,17 @@ static esp_err_t handle_ftx(httpd_req_t *req)
 // GET /api/gallery -> {"seq":<n>,"imgs":[{"n":..,"title":..,"w":..,"h":..,"utc":..}, ...]}
 static esp_err_t handle_gallery(httpd_req_t *req)
 {
-    char json[WEB_GALLERY * 128 + 32];
-    xSemaphoreTake(lock, portMAX_DELAY);
-    int o = snprintf(json, sizeof(json), "{\"seq\":%" PRIu32 ",\"imgs\":[", gal_seq);
-    bool first = true;
-    for (const GalleryImg &g : gallery) {
-        if (!g.n)
-            continue;
+    char json[UI_GALLERY * 128 + 32];
+    UiGalleryEntry list[UI_GALLERY];
+    const int count = ui_gallery_list(list);
+    int o = snprintf(json, sizeof(json), "{\"seq\":%" PRIu32 ",\"imgs\":[", ui_gallery_seq());
+    for (int i = 0; i < count; i++) {
+        const UiGalleryEntry &g = list[i];
         o += snprintf(json + o, sizeof(json) - o, "%s{\"n\":%" PRIu32 ",\"w\":%u,\"h\":%u,\"utc\":%lld,\"title\":",
-                      first ? "" : ",", g.n, g.w, g.h, (long long)g.utc);
+                      i ? "," : "", g.n, g.w, g.h, (long long)g.utc);
         o += json_str(json + o, sizeof(json) - o, g.title);
         o += snprintf(json + o, sizeof(json) - o, "}");
-        first = false;
     }
-    xSemaphoreGive(lock);
     o += snprintf(json + o, sizeof(json) - o, "]}");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -716,31 +483,22 @@ static esp_err_t handle_gallery_img(httpd_req_t *req)
         if (httpd_query_key_value(q, "o", v, sizeof(v)) == ESP_OK)
             off = strtoul(v, nullptr, 10);
     }
-    const GalleryImg &g = gallery[(want + WEB_GALLERY - 1) % WEB_GALLERY];
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    // In chunks copied under the lock: the slot may be reused meanwhile.
+    // In chunks copied under the hub lock: the slot may be reused meanwhile.
     EXT_RAM_BSS_ATTR static uint8_t buf[8192];    // HTTP server task only
     const size_t start = off;
-    size_t end = 0;
     esp_err_t err = ESP_OK;
-    do {
-        xSemaphoreTake(lock, portMAX_DELAY);
-        const bool held = want && g.n == want;
-        const size_t total = held ? (size_t)g.w * g.h * 3 : 0;
-        if (!end)
-            end = total < start + IMG_MAX_BYTES ? total : start + IMG_MAX_BYTES;
-        const size_t n = held && off < end ? (end - off < sizeof(buf) ? end - off : sizeof(buf)) : 0;
-        if (n)
-            memcpy(buf, g.px + off, n);
-        xSemaphoreGive(lock);
-        if (!held)
+    while (err == ESP_OK && off - start < IMG_MAX_BYTES) {
+        const size_t room = start + IMG_MAX_BYTES - off;
+        const int n = ui_gallery_read(want, off, buf, room < sizeof(buf) ? room : sizeof(buf));
+        if (n < 0)
             return off > start ? ESP_FAIL : httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "sem imagem");
         if (!n)
             break;
         err = httpd_resp_send_chunk(req, (const char *)buf, n);
         off += n;
-    } while (err == ESP_OK && off < end);
+    }
     if (err == ESP_OK)
         err = httpd_resp_send_chunk(req, nullptr, 0);
     return err;
@@ -748,7 +506,7 @@ static esp_err_t handle_gallery_img(httpd_req_t *req)
 
 // ---------------------------------------------------------------------------
 // WebSocket /ws: the server pushes every WS_PUSH_MS a binary frame with the new
-// spectrum rows ([1][n][n x WEB_BINS]) and a text frame with the status JSON.
+// spectrum rows ([1][n][n x UI_BINS]) and a text frame with the status JSON.
 // Client bookkeeping and sends all run in the HTTP server task (handlers and
 // httpd_queue_work), so a socket is never written from two tasks.
 
@@ -767,7 +525,7 @@ struct WsClient {
 static WsClient ws_clients[WS_MAX_CLIENTS];
 static volatile bool ws_push_pending = false;
 static httpd_handle_t server = nullptr;
-EXT_RAM_BSS_ATTR static uint8_t ws_bin[2 + ROWS * WEB_BINS];
+EXT_RAM_BSS_ATTR static uint8_t ws_bin[2 + ROWS * UI_BINS];
 
 // Clients never send data; read and discard whatever arrives.
 static esp_err_t handle_ws(httpd_req_t *req)
@@ -864,10 +622,10 @@ static void ws_push_work(void *)
         if (snap.nrows > 0) {
             ws_bin[0] = 1;
             ws_bin[1] = (uint8_t)snap.nrows;
-            memcpy(ws_bin + 2, snap.rows, snap.nrows * WEB_BINS);
+            memcpy(ws_bin + 2, snap.rows, snap.nrows * UI_BINS);
             f.type = HTTPD_WS_TYPE_BINARY;
             f.payload = ws_bin;
-            f.len = 2 + snap.nrows * WEB_BINS;
+            f.len = 2 + snap.nrows * UI_BINS;
             err = httpd_ws_send_frame_async(server, c.fd, &f);
         }
         const int64_t now = esp_timer_get_time();
@@ -965,7 +723,6 @@ static esp_err_t handle_config(httpd_req_t *req)
         settimeofday(&tv, nullptr);
         ESP_LOGW(TAG, "hora UTC recebida da pagina");
     }
-    ftx_core_set_protocol((FtxProtocol)g_settings.ftx_mode);
     // One-off actions, not settings.
     if (form_value(body, "fax_shift", v, sizeof(v)))
         fax_request_shift(strtof(v, nullptr));
@@ -975,11 +732,7 @@ static esp_err_t handle_config(httpd_req_t *req)
         fax_request_stop();
         sstv_request_stop();
     }
-    fax_set_lpm(g_settings.fax_lpm);
-    fax_set_ioc(g_settings.fax_ioc);
-    fax_set_auto(g_settings.fax_auto);
-    sstv_set_auto_adjust(g_settings.sstv_adjust);
-    cw_set_min_contrast(g_settings.cw_min_contrast);
+    settings_apply();
     settings_save();
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"ok\":true}");
@@ -1063,16 +816,40 @@ static void http_start()
     ESP_ERROR_CHECK(esp_timer_start_periodic(push_timer, WS_PUSH_MS * 1000ULL));
 }
 
-void web_start()
+// Joining the network waits up to STA_TIMEOUT_MS, so it runs in its own task.
+static void web_task(void *)
 {
-    image_alloc();
-    lock = xSemaphoreCreateMutex();
-    cw_set_min_contrast(g_settings.cw_min_contrast);
-    fax_set_lpm(g_settings.fax_lpm);
-    fax_set_ioc(g_settings.fax_ioc);
-    fax_set_auto(g_settings.fax_auto);
-    sstv_set_auto_adjust(g_settings.sstv_adjust);
-    ftx_core_set_protocol((FtxProtocol)g_settings.ftx_mode);
     wifi_start();
     http_start();
+    vTaskDelete(nullptr);
 }
+
+static volatile bool web_started = false;
+
+void web_start()
+{
+    web_started = true;
+    xTaskCreatePinnedToCore(web_task, "web_start", 4096, nullptr, 5, nullptr, 0);
+}
+
+WebNetInfo web_net_info()
+{
+    WebNetInfo info = {};
+    info.started = web_started;
+    info.connected = ip_str[0] != 0;
+    info.ap = ap_active;
+    info.rssi = web_started ? wifi_rssi() : 0;
+    strlcpy(info.ip, ip_str, sizeof(info.ip));
+    return info;
+}
+
+#else  // !WEB_UI
+
+void web_start() {}
+
+WebNetInfo web_net_info()
+{
+    return {};
+}
+
+#endif // WEB_UI

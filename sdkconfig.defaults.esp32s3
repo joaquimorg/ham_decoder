@@ -14,3 +14,6 @@ CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_USE_MALLOC=y
 # Large buffers marked EXT_RAM_BSS_ATTR (web server, decoders) live in PSRAM.
 CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+# Wi-Fi and LWIP buffers in PSRAM too: internal RAM runs out with the LCD
+# (the web server task could not be created).
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y

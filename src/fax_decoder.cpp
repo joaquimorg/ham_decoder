@@ -6,7 +6,7 @@
 #include <stdlib.h>
 
 #include "config.h"
-#include "web_ui.h"
+#include "ui_hub.h"
 
 // Algorithm mirrored and validated off-target in tools/fax_sim.py. Keep both
 // in sync.
@@ -56,7 +56,7 @@ float rate = FS;               // measured sample rate
 float slant = 1.0f;            // line length correction from the phasing fit
 
 FaxState state = FAX_IDLE;
-uint32_t web_id = 0;           // web_image_* id of the current image
+uint32_t img_id = 0;           // ui_image_* id of the current image
 float line_samples = 0.0f;     // samples per line
 float pos = 0.0f;              // sample position in the current line
 int col = 0;
@@ -114,7 +114,7 @@ void begin_image(bool phasing)
 {
     char title[32];
     snprintf(title, sizeof(title), "FAX %d lpm IOC %d", lpm, ioc);
-    web_id = web_image_begin(title, W, 1, W / ((float)M_PI * ioc));
+    img_id = ui_image_begin(title, W, 1, W / ((float)M_PI * ioc));
     slant = 1.0f;
     line_samples = nominal_line();
     pos = 0.0f;
@@ -129,7 +129,7 @@ void begin_image(bool phasing)
 void end_image()
 {
     if (state != FAX_IDLE)
-        web_image_end(web_id);
+        ui_image_end(img_id);
     state = FAX_IDLE;
 }
 
@@ -186,7 +186,7 @@ void send_line()
         const float v = line[i] * 255.0f + 0.5f;
         px[i] = v <= 0.0f ? 0 : v >= 255.0f ? 255 : (uint8_t)v;
     }
-    web_image_line(web_id, px);
+    ui_image_line(img_id, px);
     image_lines++;
 }
 
@@ -476,7 +476,7 @@ void fax_process(const float *hz, int n)
             // Lines already sent are rotated on the page; the next ones start
             // that much later (the partial line in progress is lost).
             const int col = (int)(shift * W + 0.5f);
-            web_id = web_image_rotate(web_id, col);
+            img_id = ui_image_rotate(img_id, col);
             pos -= col * line_samples / W;
             if (pos >= 0.0f)
                 pos -= line_samples;

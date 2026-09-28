@@ -15,7 +15,7 @@
 #include "capture.h"
 #include "classifier.h"
 #include "settings.h"
-#include "web_ui.h"
+#include "ui_hub.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 
@@ -386,7 +386,7 @@ void report()
     }
     char cw_text[CW_TEXT_MAX + 1];
     cw_take_text(cw_text, sizeof(cw_text));
-    web_push_text(WEB_TEXT_CW, cw_text);
+    ui_push_text(UI_TEXT_CW, cw_text);
 
     // RTTY follows the two FSK tones, held through short pauses.
     rtty_set_baud(g_settings.rtty_baud);
@@ -404,7 +404,7 @@ void report()
     }
     char rtty_text[RTTY_TEXT_MAX + 1];
     rtty_take_text(rtty_text, sizeof(rtty_text));
-    web_push_text(WEB_TEXT_RTTY, rtty_text);
+    ui_push_text(UI_TEXT_RTTY, rtty_text);
 #if SERIAL_REPORT >= 2
     for (char *p = rtty_text; *p; p++)
         if (*p == '\n')
@@ -436,7 +436,7 @@ void report()
     const float rms_dbfs = level_n ? 10.0f * log10f((float)(level_acc / level_n) + 1e-14f) + 3.01f : -140.0f;
     const float pk_dbfs = 20.0f * log10f((float)peak_raw / AUDIO_FULL_SCALE + 1e-9f);
 
-    WebStatus ws = {};
+    UiStatus ws = {};
     strlcpy(ws.label, label, sizeof(ws.label));
     ws.snr_db = snr;
     ws.rms_dbfs = rms_dbfs;
@@ -449,7 +449,7 @@ void report()
     ws.rtty_active = rtty_active();
     strlcpy(ws.ml_label, ml_class_name(ml.cls), sizeof(ws.ml_label));
     ws.ml_prob = ml.prob;
-    web_push_status(ws);
+    ui_push_status(ws);
 
 #if SERIAL_REPORT >= 2
     if (report_no % WATERFALL_RULER_EVERY == 0)
@@ -574,17 +574,17 @@ void analyzer_process_block(const float *x, int32_t raw_peak, uint32_t overruns)
     fft(re, im);
 
     // One web spectrum row per frame: 0.5 dB steps from -120 dBFS.
-    static_assert(WEB_BINS <= HALF, "WEB_BINS exceeds the FFT");
-    uint8_t row[WEB_BINS];
+    static_assert(UI_BINS <= HALF, "UI_BINS exceeds the FFT");
+    uint8_t row[UI_BINS];
     for (int k = 0; k < HALF; k++) {
         const float p = (re[k] * re[k] + im[k] * im[k]) * POWER_NORM;
         psd[k] += p;
-        if (k < WEB_BINS) {
+        if (k < UI_BINS) {
             const float q = (10.0f * log10f(p + 1e-14f) + 120.0f) * 2.0f;
             row[k] = q <= 0.0f ? 0 : q >= 255.0f ? 255 : (uint8_t)q;
         }
     }
-    web_push_spectrum(row);
+    ui_push_spectrum(row);
 
     if (++frames >= FFT_FRAMES_PER_REPORT) {
         report();

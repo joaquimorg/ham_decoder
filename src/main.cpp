@@ -13,7 +13,9 @@
 #include "analyzer.h"
 #include "audio_source.h"
 #include "settings.h"
+#include "ui_hub.h"
 #include "web_ui.h"
+#include "lcd_ui.h"
 
 static const char *TAG = "RX_ANALYZER";
 
@@ -100,7 +102,7 @@ static void analysis_task(void *arg)
         const int64_t t0 = esp_timer_get_time();
         analyzer_process_block(dsp_buffers[msg.index], msg.raw_peak, msg.overruns);
         load += ((esp_timer_get_time() - t0) / block_us - load) * 0.1f;
-        web_set_load(load);
+        ui_set_load(load);
         xQueueSend(free_queue, &msg.index, portMAX_DELAY);
         audio_source_log();
     }
@@ -139,6 +141,8 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "=================================");
 
     settings_init();
+    ui_hub_init();
+    settings_apply();
 
     // Why did we (re)start? Logged as a warning so it stays visible, counted
     // in NVS when unexpected, and shown on the web page.
@@ -146,7 +150,7 @@ extern "C" void app_main(void)
     const char *reason = reset_reason_text(esp_reset_reason(), &unexpected);
     const unsigned resets = settings_count_reset(unexpected);
     ESP_LOGW(TAG, "arranque: %s (reinicios inesperados ate agora: %u)", reason, resets);
-    web_set_boot_info(reason, unexpected, resets);
+    ui_set_boot_info(reason, unexpected, resets);
 
     free_queue = xQueueCreate(DSP_NUM_BUFFERS, sizeof(int));
     full_queue = xQueueCreate(DSP_NUM_BUFFERS, sizeof(BlockMsg));
@@ -159,7 +163,11 @@ extern "C" void app_main(void)
     xTaskCreatePinnedToCore(analysis_task, "analysis_task", 6144, nullptr, 4, nullptr, 1);
     xTaskCreatePinnedToCore(audio_task, "audio_task", 4096, nullptr, 6, nullptr, 1);
 
-    web_start();
+    lcd_ui_start();
+    if (WEB_UI && g_settings.web_enabled)
+        web_start();
+    else
+        ESP_LOGW(TAG, "Wi-Fi e pagina web desligados");
 
     // After start-up only warnings and errors reach the console (the web
     // address is logged as a warning).

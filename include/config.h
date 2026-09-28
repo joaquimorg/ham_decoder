@@ -3,12 +3,18 @@
 #include "sdkconfig.h"
 
 // RX Analyzer - hardware configuration
-// Target: ESP32-S3 DevKitC-1 N16R8 (PSRAM needed for FAX/SSTV/FT8).
+// Boards (PlatformIO env sets BOARD_FNK0104S; otherwise the DevKitC):
+//   Freenove FNK0104S: ESP32-S3R8 + 16 MB flash, 4" ST7796 480x320 LCD,
+//                      FT6336U touch, ES8311 codec (see docs/HARDWARE.md)
+//   ESP32-S3 DevKitC-1 N16R8
+// Both have 8 MB PSRAM, needed for FAX/SSTV/FT8.
 
-#if CONFIG_IDF_TARGET_ESP32S3
-#define BOARD_NAME      "ESP32-S3"
-#else
+#if !CONFIG_IDF_TARGET_ESP32S3
 #error "Unsupported target: add it in config.h"
+#elif defined(BOARD_FNK0104S)
+#define BOARD_NAME      "Freenove FNK0104S"
+#else
+#define BOARD_NAME      "ESP32-S3 DevKitC"
 #endif
 
 // Audio source. The internal ADC decodes 30 WPM CW without errors; both
@@ -16,6 +22,9 @@
 #define AUDIO_SRC_PCM1808   0
 #define AUDIO_SRC_ADC       1
 #define AUDIO_SOURCE        AUDIO_SRC_ADC
+#if defined(BOARD_FNK0104S) && AUDIO_SOURCE == AUDIO_SRC_PCM1808
+#error "FNK0104S: the I2S pins go to the on-board ES8311 codec"
+#endif
 
 // PCM1808 over I2S: ESP32 master (MCLK 256 fs), PCM1808 slave
 // (MD0 = MD1 = FMT = GND). 22 ohm series resistors on all four lines at the
@@ -41,7 +50,13 @@
 // Internal ADC1 (alternative): audio -> 1 uF -> GPIO1, biased at 3V3/2 by
 // 2 x 10 k. ADC1 only (ADC2 is shared with Wi-Fi). 12 dB attenuation:
 // ~0..3.1 V range, so the 1.65 V bias sits near mid-scale; max ~2.8 Vpp.
+// FNK0104S: GPIO2 (ADC1_CH1, header P3 pin 1); its GPIO1 is the speaker
+// amplifier enable (active low, pulled up = off).
+#if defined(BOARD_FNK0104S)
+#define ADC_INPUT_GPIO      2
+#else
 #define ADC_INPUT_GPIO      1
+#endif
 #define ADC_INPUT_ATTEN     ADC_ATTEN_DB_12
 
 // Capture rate; any multiple of DSP_SAMPLE_RATE works (24 kHz was tried to
@@ -109,6 +124,34 @@
 // FT8 / FT4 (ft8_lib): UTC time from NTP (pool.ntp.org) or from the web page
 #define FTX_NTP_SERVER      "pool.ntp.org"
 #define FTX_TASK_STACK      12288   // decoding task (core 0)
+
+// User interfaces. Both read the decoders' output from ui_hub.
+// WEB_UI: 1 = build the Wi-Fi + web page (then switched on/off in the
+// settings, on the LCD or in NVS); 0 = leave it out (no Wi-Fi at all).
+// Without Wi-Fi there is no NTP time for FT8/FT4 (the board has no RTC).
+#define WEB_UI              1
+// LCD + touch (Freenove FNK0104S only): ST7796 480x320 over SPI, FT6336U.
+#if defined(BOARD_FNK0104S)
+#define LCD_UI              1
+#else
+#define LCD_UI              0
+#endif
+#define LCD_SPI_HOST        SPI2_HOST
+#define LCD_PIN_SCK         12
+#define LCD_PIN_MOSI        11
+#define LCD_PIN_MISO        13
+#define LCD_PIN_CS          10
+#define LCD_PIN_DC          46
+#define LCD_PIN_BL          45      // backlight, active high (BSS138), PWM
+#define LCD_SPI_HZ          (80 * 1000 * 1000)    // as Freenove's TFT_eSPI setup (IOMUX pins)
+#define LCD_H_RES           480     // landscape
+#define LCD_V_RES           320
+// I2C bus shared by the touch controller and the ES8311 codec.
+#define BOARD_I2C_SDA       16
+#define BOARD_I2C_SCL       15
+#define TOUCH_PIN_INT       17
+#define TOUCH_PIN_RST       18
+#define LCD_TASK_CORE       0       // with Wi-Fi; audio and analysis own core 1
 
 // Wi-Fi radio. Power save (modem sleep) switches the radio on and off in
 // bursts that show up as noise and spurs on the internal ADC and delay

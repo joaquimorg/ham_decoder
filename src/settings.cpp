@@ -7,6 +7,10 @@
 #include "esp_log.h"
 
 #include "config.h"
+#include "cw_decoder.h"
+#include "fax_decoder.h"
+#include "sstv_decoder.h"
+#include "ftx_core.h"
 
 #if __has_include("wifi_secrets.h")
 #include "wifi_secrets.h"    // optional, git-ignored: WIFI_SSID / WIFI_PASS
@@ -35,6 +39,9 @@ static void set_defaults()
     g_settings.fax_auto = true;
     g_settings.ftx_mode = 0;
     g_settings.sstv_adjust = false;
+    g_settings.web_enabled = true;
+    g_settings.lcd_brightness = 80;
+    g_settings.language = LANG_PT;
     strlcpy(g_settings.wifi_ssid, WIFI_SSID, sizeof(g_settings.wifi_ssid));
     strlcpy(g_settings.wifi_pass, WIFI_PASS, sizeof(g_settings.wifi_pass));
 }
@@ -77,6 +84,12 @@ void settings_init()
         g_settings.ftx_mode = u8;
     if (nvs_get_u8(h, "sstv_adj", &u8) == ESP_OK)
         g_settings.sstv_adjust = u8 != 0;
+    if (nvs_get_u8(h, "web_on", &u8) == ESP_OK)
+        g_settings.web_enabled = u8 != 0;
+    if (nvs_get_u8(h, "lcd_bl", &u8) == ESP_OK && u8 >= 5 && u8 <= 100)
+        g_settings.lcd_brightness = u8;
+    if (nvs_get_u8(h, "lang", &u8) == ESP_OK && u8 <= LANG_EN)
+        g_settings.language = u8;
     len = sizeof(g_settings.wifi_ssid);
     nvs_get_str(h, "ssid", g_settings.wifi_ssid, &len);
     len = sizeof(g_settings.wifi_pass);
@@ -122,8 +135,21 @@ void settings_save()
     nvs_set_u8(h, "fax_auto", g_settings.fax_auto ? 1 : 0);
     nvs_set_u8(h, "ftx_mode", (uint8_t)g_settings.ftx_mode);
     nvs_set_u8(h, "sstv_adj", g_settings.sstv_adjust ? 1 : 0);
+    nvs_set_u8(h, "web_on", g_settings.web_enabled ? 1 : 0);
+    nvs_set_u8(h, "lcd_bl", (uint8_t)g_settings.lcd_brightness);
+    nvs_set_u8(h, "lang", (uint8_t)g_settings.language);
     nvs_set_str(h, "ssid", g_settings.wifi_ssid);
     nvs_set_str(h, "pass", g_settings.wifi_pass);
     nvs_commit(h);
     nvs_close(h);
+}
+
+void settings_apply()
+{
+    cw_set_min_contrast(g_settings.cw_min_contrast);
+    fax_set_lpm(g_settings.fax_lpm);
+    fax_set_ioc(g_settings.fax_ioc);
+    fax_set_auto(g_settings.fax_auto);
+    sstv_set_auto_adjust(g_settings.sstv_adjust);
+    ftx_core_set_protocol((FtxProtocol)g_settings.ftx_mode);
 }

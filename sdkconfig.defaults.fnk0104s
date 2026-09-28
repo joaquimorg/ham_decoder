@@ -1,0 +1,13 @@
+# Freenove FNK0104S: the USB-C port is the native USB-Serial/JTAG.
+# (sdkconfig.defaults.esp32s3 is appended automatically for the target.)
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# LVGL (src/lcd_ui.cpp): RGB565; its heap is in PSRAM (lv_malloc_core in
+# lcd_ui.cpp) - internal RAM is needed for DMA buffers, task stacks and Wi-Fi.
+CONFIG_LV_COLOR_DEPTH_16=y
+CONFIG_LV_USE_CUSTOM_MALLOC=y
+CONFIG_LV_USE_CLIB_STRING=y
+CONFIG_LV_USE_CLIB_SPRINTF=y
+# UI fonts with the accented letters: src/fonts (tools/gen_fonts.sh).
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_THEME_DEFAULT_DARK=y

@@ -3,7 +3,7 @@
 // HF FAX (WEFAX) decoder: FM 1500 Hz (black) .. 2300 Hz (white). An image
 // starts on the APT start tone (300 Hz for IOC 576, 675 Hz for IOC 288), is
 // aligned on the phasing lines and ends on the 450 Hz stop tone; it can also
-// be started and stopped by hand. Lines go to the web page (web_image_*).
+// be started and stopped by hand. Lines go to the displays (ui_image_*).
 // Mirrored and validated off-target in tools/fax_sim.py.
 
 enum FaxState { FAX_IDLE = 0, FAX_PHASING = 1, FAX_RECEIVING = 2 };

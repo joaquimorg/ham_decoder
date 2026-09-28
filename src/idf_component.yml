@@ -1,0 +1,6 @@
+# ESP-IDF component manager: LCD + touch UI (Freenove FNK0104S, src/lcd_ui.cpp).
+dependencies:
+  idf: ">=5.3"
+  lvgl/lvgl: "^9.2"
+  espressif/esp_lvgl_port: "^2.6"
+  espressif/esp_lcd_st7796: "^1.3"
