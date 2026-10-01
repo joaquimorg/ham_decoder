@@ -58,6 +58,9 @@ static const char *TAG = "LCD";
 #define TEXT_TAB_LINES  25      // lines kept in the Text tab (as shown, after wrapping)
 #define IMG_BAR_H       36      // Image tab: state + buttons under the picture
 #define IMG_BTN_H       30
+#define IMG_STOP_W      76      // buttons of the Image tab
+#define IMG_FAX_W       62
+#define IMG_REAL_W      60
 #define IMG_H           (CONTENT_H - IMG_BAR_H)
 #define FTX_ROWS        50      // FT8/FT4 messages kept, newest first
 #define FTX_BAR_H       28      // FT8 tab: mode + state line above the table
@@ -85,7 +88,7 @@ LV_FONT_DECLARE(font_ui_16)
     X(S_IMG_NONE,       "Sem imagem", "No image") \
     X(S_IMG_LINES,      "linhas", "lines") \
     X(S_IMG_RECEIVING,  "(a receber)", "(receiving)") \
-    X(S_IMG_STOP,       "Parar", "Stop")     X(S_CLEAR,          "Limpar", "Clear") \
+    X(S_IMG_REAL,       "1:1", "1:1")     X(S_IMG_FIT,        "Ajustar", "Fit")     X(S_IMG_STOP,       "Parar", "Stop")     X(S_CLEAR,          "Limpar", "Clear") \
     X(S_CFG_CW_AUTO,    "CW: tom automático", "CW: automatic tone") \
     X(S_CFG_CONTRAST,   "CW: contraste mínimo", "CW: minimum contrast") \
     X(S_CFG_RTTY_BAUD,  "RTTY: velocidade", "RTTY: speed") \
@@ -573,8 +576,13 @@ static void update_ftx()
 // chart scrolls up). SSTV (colour, short) by default: the whole image. A tap
 // swaps the two views.
 static bool img_swap = false;
+// Real size: one image pixel per screen pixel, dragged with a finger. Follows
+// the newest lines until dragged away from the bottom.
+static bool img_real = false, pan_follow = true;
+static int pan_x = 0, pan_y = 0;
+static lv_obj_t *lbl_img_real;
 static uint32_t img_drawn_id = 0, img_drawn_lines = 0;
-static int64_t img_drawn_us = 0;
+static int64_t img_drawn_us = 0, pan_drawn_us = 0;
 
 static void render_image(bool force)
 {
@@ -584,8 +592,8 @@ static void render_image(bool force)
         lv_label_set_text(lbl_img_info, tr(S_IMG_NONE));
         return;
     }
-    snprintf(s, sizeof(s), "%s  %u %s  %s", info.title, (unsigned)info.lines, tr(S_IMG_LINES),
-             info.active ? tr(S_IMG_RECEIVING) : "");
+    snprintf(s, sizeof(s), "%s  %u %s%s", info.title, (unsigned)info.lines, tr(S_IMG_LINES),
+             info.active ? " ..." : "");
     lv_label_set_text(lbl_img_info, s);
 
     const int64_t now = esp_timer_get_time();
@@ -595,9 +603,47 @@ static void render_image(bool force)
 
     const uint32_t held = info.lines - info.first;
     const float aspect = info.aspect > 0.0f ? info.aspect : 1.0f;
+    if (info.id != img_drawn_id) {
+        pan_follow = true;
+        pan_x = 0;
+    }
     for (int i = 0; i < LCD_H_RES * IMG_H; i++)
         img_buf[i] = 0;
-    if (held > 0) {
+    if (held > 0 && img_real) {
+        // Rows of the picture at 1:1: a line is `aspect` rows high (two lines per
+        // row for FAX), so the lines are picked, not averaged.
+        const int total = (int)(held * aspect);
+        const int max_y = total > IMG_H ? total - IMG_H : 0;
+        const int max_x = info.width > LCD_H_RES ? info.width - LCD_H_RES : 0;
+        if (pan_follow)
+            pan_y = max_y;
+        pan_y = pan_y < 0 ? 0 : pan_y > max_y ? max_y : pan_y;
+        pan_x = pan_x < 0 ? 0 : pan_x > max_x ? max_x : pan_x;
+        const int out_w = info.width < LCD_H_RES ? info.width : LCD_H_RES;
+        const int x0 = (LCD_H_RES - out_w) / 2;
+        static uint8_t line[UI_IMG_MAX_LINE];
+        uint32_t loaded = UINT32_MAX;
+        for (int y = 0; y < IMG_H && pan_y + y < total; y++) {
+            const uint32_t k = info.first + (uint32_t)((pan_y + y) / aspect);
+            if (k >= info.lines)
+                break;
+            if (k != loaded) {
+                if (!ui_get_image_lines(info.id, k, 1, line))
+                    return;
+                loaded = k;
+            }
+            uint16_t *dst = img_buf + y * LCD_H_RES + x0;
+            for (int x = 0; x < out_w; x++) {
+                if (info.channels == 3) {
+                    const uint8_t *p = line + (pan_x + x) * 3;
+                    dst[x] = rgb565(p[0], p[1], p[2]);
+                } else {
+                    const uint8_t g = line[pan_x + x];
+                    dst[x] = rgb565(g, g, g);
+                }
+            }
+        }
+    } else if (held > 0) {
         float scale;
         uint32_t first = info.first;
         const bool scroll = (info.channels == 1) != img_swap;
@@ -645,7 +691,42 @@ static void render_image(bool force)
 
 static void image_event(lv_event_t *)
 {
+    if (img_real)
+        return;    // a drag, not a tap
     img_swap = !img_swap;
+    render_image(true);
+}
+
+// Drag in the real size view.
+static void image_drag_event(lv_event_t *)
+{
+    if (!img_real)
+        return;
+    lv_indev_t *indev = lv_indev_active();
+    if (!indev)
+        return;
+    lv_point_t v;
+    lv_indev_get_vect(indev, &v);
+    if (!v.x && !v.y)
+        return;
+    pan_x -= v.x;
+    pan_y -= v.y;
+    const UiImageInfo info = ui_get_image_info();
+    const int total = (int)((info.lines - info.first) * (info.aspect > 0.0f ? info.aspect : 1.0f));
+    pan_follow = pan_y >= total - IMG_H;    // dragged down to the newest lines
+    const int64_t now = esp_timer_get_time();
+    if (now - pan_drawn_us < 60000)
+        return;
+    pan_drawn_us = now;
+    render_image(true);
+}
+
+static void img_real_event(lv_event_t *)
+{
+    img_real = !img_real;
+    pan_follow = true;
+    pan_x = 0;
+    lv_label_set_text(lbl_img_real, img_real ? tr(S_IMG_FIT) : tr(S_IMG_REAL));
     render_image(true);
 }
 
@@ -1239,29 +1320,38 @@ static void build_ui()
         lv_table_set_cell_value(ftx_table, 0, c, heads[c]);
     }
 
-    // Image: the picture (tap: whole image / fit width), state and buttons.
+    // Image: the picture (tap: whole image / fit width; 1:1 button: real size, drag
+    // to pan), state and buttons.
     img_canvas = make_canvas(tab_img, &img_buf, LCD_H_RES, IMG_H);
     lv_obj_set_clickable(img_canvas, true);
     lv_obj_add_event_cb(img_canvas, image_event, LV_EVENT_SHORT_CLICKED, nullptr);
+    lv_obj_add_event_cb(img_canvas, image_drag_event, LV_EVENT_PRESSING, nullptr);
     // Bottom strip (IMG_BAR_H): state on the left, buttons on the right.
     const int bar_y = IMG_H + (IMG_BAR_H - IMG_BTN_H) / 2;
     lv_obj_t *b = lv_button_create(tab_img);
-    lv_obj_set_size(b, 92, IMG_BTN_H);
-    lv_obj_set_pos(b, LCD_H_RES - 4 - 92, bar_y);
+    lv_obj_set_size(b, IMG_STOP_W, IMG_BTN_H);
+    lv_obj_set_pos(b, LCD_H_RES - 4 - IMG_STOP_W, bar_y);
     lv_obj_t *bl = lv_label_create(b);
     lv_label_set_text_fmt(bl, LV_SYMBOL_STOP " %s", tr(S_IMG_STOP));
     lv_obj_center(bl);
     lv_obj_add_event_cb(b, img_stop_event, LV_EVENT_CLICKED, nullptr);
     lv_obj_t *b2 = lv_button_create(tab_img);
-    lv_obj_set_size(b2, 76, IMG_BTN_H);
-    lv_obj_set_pos(b2, LCD_H_RES - 4 - 92 - 6 - 76, bar_y);
+    lv_obj_set_size(b2, IMG_FAX_W, IMG_BTN_H);
+    lv_obj_set_pos(b2, LCD_H_RES - 4 - IMG_STOP_W - 6 - IMG_FAX_W, bar_y);
     lv_obj_t *bl2 = lv_label_create(b2);
     lv_label_set_text(bl2, LV_SYMBOL_PLAY " FAX");
     lv_obj_center(bl2);
     lv_obj_add_event_cb(b2, fax_start_event, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *b3 = lv_button_create(tab_img);
+    lv_obj_set_size(b3, IMG_REAL_W, IMG_BTN_H);
+    lv_obj_set_pos(b3, LCD_H_RES - 4 - IMG_STOP_W - 6 - IMG_FAX_W - 6 - IMG_REAL_W, bar_y);
+    lbl_img_real = lv_label_create(b3);
+    lv_label_set_text(lbl_img_real, img_real ? tr(S_IMG_FIT) : tr(S_IMG_REAL));
+    lv_obj_center(lbl_img_real);
+    lv_obj_add_event_cb(b3, img_real_event, LV_EVENT_CLICKED, nullptr);
     lbl_img_info = lv_label_create(tab_img);
     lv_obj_set_style_text_font(lbl_img_info, &font_ui_12, 0);
-    lv_obj_set_width(lbl_img_info, LCD_H_RES - 4 - 92 - 6 - 76 - 12);
+    lv_obj_set_size(lbl_img_info, LCD_H_RES - 4 - IMG_STOP_W - 6 - IMG_FAX_W - 6 - IMG_REAL_W - 12, 15);    // one line
     lv_label_set_long_mode(lbl_img_info, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_set_pos(lbl_img_info, 4, IMG_H + (IMG_BAR_H - 15) / 2);
     lv_label_set_text(lbl_img_info, tr(S_IMG_NONE));
