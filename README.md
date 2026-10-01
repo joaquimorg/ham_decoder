@@ -137,4 +137,4 @@ Technical documentation is currently in Portuguese:
 
 ## Licença / License
 
-Ainda por definir pelo autor (a `ft8_lib` em `components/` é MIT). / To be chosen by the author (`components/ft8_lib` is MIT).
+[MIT](LICENSE). A `ft8_lib` em `components/` tem a sua própria licença MIT. / [MIT](LICENSE). `components/ft8_lib` has its own MIT license.
