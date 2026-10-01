@@ -12,7 +12,9 @@
 #include "sstv_decoder.h"
 #include "ftx_core.h"
 
-#if __has_include("wifi_secrets.h")
+// Network built into the firmware for boards without a display. With the LCD
+// the network is chosen on the board itself, so this file is ignored.
+#if !LCD_UI && __has_include("wifi_secrets.h")
 #include "wifi_secrets.h"    // optional, git-ignored: WIFI_SSID / WIFI_PASS
 #endif
 #ifndef WIFI_SSID

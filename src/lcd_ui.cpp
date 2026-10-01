@@ -103,6 +103,19 @@ LV_FONT_DECLARE(font_ui_16)
     X(S_WIFI_JOINING,   "a ligar...", "connecting...") \
     X(S_WIFI_AP,        "  + ponto de acesso RX-Analyzer (192.168.4.1)", \
                         "  + access point RX-Analyzer (192.168.4.1)") \
+    X(S_WIFI_NETWORKS,  "Redes Wi-Fi", "Wi-Fi networks") \
+    X(S_WIFI_SCANNING,  "A procurar redes...", "Scanning for networks...") \
+    X(S_WIFI_NONE_FOUND, "Nenhuma rede encontrada", "No networks found") \
+    X(S_WIFI_PASSWORD,  "Palavra-passe", "Password") \
+    X(S_WIFI_SHOW,      "Mostrar", "Show") \
+    X(S_WIFI_CONNECT,   "Ligar", "Connect") \
+    X(S_CANCEL,         "Cancelar", "Cancel") \
+    X(S_CLOSE,          "Fechar", "Close") \
+    X(S_WIFI_CONNECTING, "A ligar a %s...", "Connecting to %s...") \
+    X(S_WIFI_CONNECTED, "Ligado a %s\nEndereço: %s", "Connected to %s\nAddress: %s") \
+    X(S_WIFI_BAD_PASS,  "Palavra-passe incorreta", "Wrong password") \
+    X(S_WIFI_NO_AP,     "Rede não encontrada", "Network not found") \
+    X(S_WIFI_FAILED,    "Não foi possível ligar", "Could not connect") \
     X(S_NET_NONE,       "(nenhuma)", "(none)") \
     X(S_INFO_NET,       "Rede", "Network") \
     X(S_INFO_BOOT,      "Arranque", "Boot") \
@@ -773,6 +786,206 @@ static int index_of_int(const int *v, int n, int x)
     return 0;
 }
 
+#if WEB_UI
+
+// ---------------------------------------------------------------------------
+// Wi-Fi setup: scan, pick a network, type the password (full-screen panel)
+
+enum WifiStage { WS_LIST, WS_PASS, WS_STATUS };
+
+static lv_obj_t *wifi_panel, *wifi_list, *wifi_msg, *wifi_ta, *wifi_kb;
+static lv_timer_t *wifi_timer;
+static WifiStage wifi_stage;
+static WebScanEntry wifi_nets[WEB_SCAN_MAX];
+static int wifi_net_count;
+static bool wifi_list_filled;
+static char wifi_sel[33];
+static bool wifi_sel_secure;
+static uint32_t wifi_wait_start;
+
+static void wifi_show_list();
+
+static void wifi_close()
+{
+    if (wifi_timer) {
+        lv_timer_delete(wifi_timer);
+        wifi_timer = nullptr;
+    }
+    if (wifi_panel) {
+        lv_obj_delete(wifi_panel);
+        wifi_panel = nullptr;
+    }
+}
+
+static void wifi_close_event(lv_event_t *) { wifi_close(); }
+
+static lv_obj_t *wifi_button(const char *text, int x, int y, int w, int h, lv_event_cb_t cb)
+{
+    lv_obj_t *b = lv_button_create(wifi_panel);
+    lv_obj_set_size(b, w, h);
+    lv_obj_set_pos(b, x, y);
+    lv_obj_t *l = lv_label_create(b);
+    lv_label_set_text(l, text);
+    lv_obj_center(l);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, nullptr);
+    return b;
+}
+
+static void wifi_title(const char *text)
+{
+    lv_obj_t *t = lv_label_create(wifi_panel);
+    lv_obj_set_style_text_font(t, &font_ui_16, 0);
+    lv_label_set_long_mode(t, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_width(t, 260);
+    lv_obj_set_pos(t, 8, 12);
+    lv_label_set_text_fmt(t, LV_SYMBOL_WIFI "  %s", text);
+}
+
+static void wifi_connect_now()
+{
+    const char *pass = wifi_sel_secure && wifi_ta ? lv_textarea_get_text(wifi_ta) : "";
+    web_connect(wifi_sel, pass);
+    wifi_stage = WS_STATUS;
+    wifi_wait_start = lv_tick_get();
+    lv_obj_clean(wifi_panel);
+    wifi_ta = wifi_kb = nullptr;
+    wifi_title(tr(S_WIFI_NETWORKS));
+    wifi_msg = lv_label_create(wifi_panel);
+    lv_obj_set_width(wifi_msg, LCD_H_RES - 32);
+    lv_obj_set_pos(wifi_msg, 16, 80);
+    lv_label_set_text_fmt(wifi_msg, tr(S_WIFI_CONNECTING), wifi_sel);
+    wifi_button(tr(S_CLOSE), LCD_H_RES - 110, 8, 100, 30, wifi_close_event);
+}
+
+static void wifi_connect_event(lv_event_t *) { wifi_connect_now(); }
+static void wifi_back_event(lv_event_t *) { wifi_show_list(); }
+
+static void wifi_show_check_event(lv_event_t *e)
+{
+    lv_obj_t *cb = (lv_obj_t *)lv_event_get_target(e);
+    lv_textarea_set_password_mode(wifi_ta, !lv_obj_has_state(cb, LV_STATE_CHECKED));
+}
+
+static void wifi_show_password()
+{
+    wifi_stage = WS_PASS;
+    lv_obj_clean(wifi_panel);
+    wifi_title(wifi_sel);
+    wifi_button(tr(S_CANCEL), LCD_H_RES - 110, 8, 100, 30, wifi_back_event);
+
+    wifi_ta = lv_textarea_create(wifi_panel);
+    lv_textarea_set_one_line(wifi_ta, true);
+    lv_textarea_set_password_mode(wifi_ta, true);
+    lv_textarea_set_max_length(wifi_ta, 64);
+    lv_textarea_set_placeholder_text(wifi_ta, tr(S_WIFI_PASSWORD));
+    lv_obj_set_size(wifi_ta, 236, 36);
+    lv_obj_set_pos(wifi_ta, 4, 44);
+
+    lv_obj_t *cb = lv_checkbox_create(wifi_panel);
+    lv_checkbox_set_text(cb, tr(S_WIFI_SHOW));
+    lv_obj_set_pos(cb, 248, 50);
+    lv_obj_add_event_cb(cb, wifi_show_check_event, LV_EVENT_VALUE_CHANGED, nullptr);
+
+    wifi_button(tr(S_WIFI_CONNECT), LCD_H_RES - 110, 44, 106, 36, wifi_connect_event);
+
+    wifi_kb = lv_keyboard_create(wifi_panel);
+    lv_obj_set_size(wifi_kb, LCD_H_RES, LCD_V_RES - 88);
+    lv_obj_set_pos(wifi_kb, 0, 88);
+    lv_obj_set_style_text_font(wifi_kb, &font_ui_16, LV_PART_ITEMS);
+    lv_keyboard_set_textarea(wifi_kb, wifi_ta);
+    lv_obj_add_event_cb(wifi_kb, wifi_connect_event, LV_EVENT_READY, nullptr);
+}
+
+static void wifi_pick_event(lv_event_t *e)
+{
+    const int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (i < 0 || i >= wifi_net_count)
+        return;
+    strlcpy(wifi_sel, wifi_nets[i].ssid, sizeof(wifi_sel));
+    wifi_sel_secure = wifi_nets[i].secure;
+    if (wifi_sel_secure)
+        wifi_show_password();
+    else
+        wifi_connect_now();
+}
+
+static void wifi_scan_event(lv_event_t *) { wifi_show_list(); }
+
+// List of networks; it fills in (wifi_poll) when the scan ends.
+static void wifi_show_list()
+{
+    wifi_stage = WS_LIST;
+    lv_obj_clean(wifi_panel);
+    wifi_ta = wifi_kb = nullptr;
+    wifi_title(tr(S_WIFI_NETWORKS));
+    wifi_button(LV_SYMBOL_REFRESH, LCD_H_RES - 160, 8, 44, 30, wifi_scan_event);
+    wifi_button(tr(S_CLOSE), LCD_H_RES - 110, 8, 100, 30, wifi_close_event);
+    wifi_list = lv_list_create(wifi_panel);
+    lv_obj_set_size(wifi_list, LCD_H_RES - 8, LCD_V_RES - 50);
+    lv_obj_set_pos(wifi_list, 4, 46);
+    lv_obj_set_style_text_font(wifi_list, &font_ui_16, 0);
+    lv_list_add_text(wifi_list, tr(S_WIFI_SCANNING));
+    wifi_net_count = 0;
+    wifi_list_filled = false;
+    web_scan_start();
+}
+
+static void wifi_fill_list(int n)
+{
+    wifi_net_count = n;
+    wifi_list_filled = true;
+    lv_obj_clean(wifi_list);
+    if (n == 0)
+        lv_list_add_text(wifi_list, tr(S_WIFI_NONE_FOUND));
+    for (int i = 0; i < n; i++) {
+        char text[64];
+        snprintf(text, sizeof(text), "%s   (%d dBm)", wifi_nets[i].ssid, wifi_nets[i].rssi);
+        lv_obj_t *b = lv_list_add_button(wifi_list, wifi_nets[i].secure ? LV_SYMBOL_EYE_CLOSE : LV_SYMBOL_WIFI, text);
+        lv_obj_add_event_cb(b, wifi_pick_event, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+    }
+}
+
+static void wifi_poll(lv_timer_t *)
+{
+    if (wifi_stage == WS_LIST && !wifi_list_filled) {
+        int n = 0;
+        const int state = web_scan_result(wifi_nets, WEB_SCAN_MAX, &n);
+        if (state == 2)
+            wifi_fill_list(n);
+        else if (state == 0)
+            web_scan_start();    // the Wi-Fi was not ready yet
+    } else if (wifi_stage == WS_STATUS) {
+        const WebNetInfo net = web_net_info();
+        if (net.connected) {
+            lv_label_set_text_fmt(wifi_msg, tr(S_WIFI_CONNECTED), wifi_sel, net.ip);
+        } else if (net.fail_reason) {
+            const int r = net.fail_reason;
+            // 2, 15, 202, 204, 205: authentication / handshake failed (wrong password)
+            // 201: no access point with that name
+            const bool bad_pass = r == 2 || r == 15 || r == 202 || r == 204 || r == 205;
+            if (bad_pass || r == 201 || lv_tick_elaps(wifi_wait_start) > 15000)
+                lv_label_set_text(wifi_msg, tr(bad_pass ? S_WIFI_BAD_PASS : r == 201 ? S_WIFI_NO_AP : S_WIFI_FAILED));
+        }
+    }
+}
+
+static void wifi_open_event(lv_event_t *)
+{
+    if (wifi_panel)
+        return;
+    wifi_panel = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(wifi_panel, LCD_H_RES, LCD_V_RES);
+    lv_obj_set_pos(wifi_panel, 0, 0);
+    lv_obj_set_style_radius(wifi_panel, 0, 0);
+    lv_obj_set_style_border_width(wifi_panel, 0, 0);
+    lv_obj_set_style_pad_all(wifi_panel, 0, 0);
+    lv_obj_set_scrollable(wifi_panel, false);
+    wifi_timer = lv_timer_create(wifi_poll, 400, nullptr);
+    wifi_show_list();
+}
+
+#endif // WEB_UI
+
 static void build_settings(lv_obj_t *tab)
 {
     lv_obj_set_flex_flow(tab, LV_FLEX_FLOW_COLUMN);
@@ -799,6 +1012,11 @@ static void build_settings(lv_obj_t *tab)
     lbl_web_note = lv_label_create(lv_obj_get_parent(sw));
     lv_label_set_text(lbl_web_note, "");
     lv_obj_move_to_index(lbl_web_note, 1);
+    lv_obj_t *wbtn = lv_button_create(cfg_row(tab, tr(S_WIFI_NETWORKS)));
+    lv_label_set_text_fmt(lv_label_create(wbtn), LV_SYMBOL_WIFI " %s...", tr(S_WIFI_NETWORKS));
+    lv_obj_add_event_cb(wbtn, wifi_open_event, LV_EVENT_CLICKED, nullptr);
+    if (!g_settings.web_enabled)    // the Wi-Fi starts after the LCD, so web_net_info() is not ready yet
+        lv_obj_add_state(wbtn, LV_STATE_DISABLED);
     lv_obj_t *btn = lv_button_create(cfg_row(tab, tr(S_CFG_RESTART)));
     lv_label_set_text_fmt(lv_label_create(btn), LV_SYMBOL_REFRESH " %s", tr(S_RESTART));
     lv_obj_add_event_cb(btn, restart_event, LV_EVENT_CLICKED, nullptr);

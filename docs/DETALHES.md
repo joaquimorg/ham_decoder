@@ -84,6 +84,7 @@ A página web é opcional:
 - Com `WEB_UI 1`, liga-se e desliga-se no LCD em **⚙ → Wi-Fi e página web**, e aplica-se ao reiniciar.
 - Sem Wi-Fi não há hora UTC por NTP, e o FT8/FT4 não descodifica, porque a placa não tem RTC.
 
+0. **Na Freenove (com LCD), a rede configura-se no próprio ecrã:** **⚙ → Redes Wi-Fi...** procura as redes, escolhes uma e, se for protegida, escreves a password no teclado do ecrã (há a opção «Mostrar»). A placa liga-se logo, sem reiniciar, e diz se a password está errada ou se a rede não foi encontrada. Requer o Wi-Fi ligado (e a placa reiniciada depois de o ligar).
 1. **Primeiro arranque (sem rede configurada):** a placa cria a rede **`RX-Analyzer`**, com a password `rxanalyzer`. Liga-te a ela e abre **http://192.168.4.1/**. Em "Rede Wi-Fi", escolhe a tua rede e carrega em "Guardar e reiniciar".
 2. **A partir daí** a placa liga-se à tua rede. O endereço aparece no monitor série (`WEB: ligado a "...": http://192.168.x.y/`). O nome `rx-analyzer` também é anunciado ao router, mas nem todos os routers o resolvem.
 3. Se a rede guardada falhar durante 20 s, a placa volta a abrir a `RX-Analyzer` e continua a tentar a tua rede em segundo plano.

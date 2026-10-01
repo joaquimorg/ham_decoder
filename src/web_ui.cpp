@@ -58,20 +58,61 @@ static EventGroupHandle_t wifi_events;
 static esp_netif_t *sta_netif = nullptr;
 static bool ap_active = false;
 static esp_timer_handle_t retry_timer = nullptr;
+static volatile bool wifi_ready = false;        // esp_wifi_start() done
+static volatile bool scanning = false;
+static volatile int scan_state = 0;             // 0 none, 1 scanning, 2 done
+static WebScanEntry scan_list[WEB_SCAN_MAX];
+static int scan_count = 0;
+static volatile int fail_reason = 0;
 
 static void retry_connect(void *)
 {
-    esp_wifi_connect();
+    if (scanning)    // a scan cannot start or finish while joining
+        esp_timer_start_once(retry_timer, STA_RETRY_MS * 1000ULL);
+    else
+        esp_wifi_connect();
 }
 static char ip_str[16] = "";
+
+static void collect_scan()
+{
+    uint16_t num = 0;
+    esp_wifi_scan_get_ap_num(&num);
+    static wifi_ap_record_t recs[24];
+    if (num > 24)
+        num = 24;
+    esp_wifi_scan_get_ap_records(&num, recs);    // strongest first
+    scan_count = 0;
+    for (int i = 0; i < num && scan_count < WEB_SCAN_MAX; i++) {
+        const char *ssid = (const char *)recs[i].ssid;
+        if (!ssid[0])
+            continue;    // hidden
+        bool dup = false;
+        for (int k = 0; k < scan_count; k++)
+            dup |= strcmp(scan_list[k].ssid, ssid) == 0;
+        if (dup)
+            continue;
+        WebScanEntry &e = scan_list[scan_count++];
+        strlcpy(e.ssid, ssid, sizeof(e.ssid));
+        e.rssi = recs[i].rssi;
+        e.secure = recs[i].authmode != WIFI_AUTH_OPEN;
+    }
+}
 
 static void on_wifi_event(void *, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         if (g_settings.wifi_ssid[0])
             esp_wifi_connect();
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_SCAN_DONE) {
+        collect_scan();
+        scanning = false;
+        scan_state = 2;
+        if (g_settings.wifi_ssid[0] && !ip_str[0])
+            esp_wifi_connect();    // resume the join the scan interrupted
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         const wifi_event_sta_disconnected_t *ev = (const wifi_event_sta_disconnected_t *)data;
+        fail_reason = ev->reason;
         ESP_LOGW(TAG, "Wi-Fi desligado (motivo %d, RSSI %d dBm)", ev->reason, ev->rssi);
         xEventGroupClearBits(wifi_events, WIFI_CONNECTED_BIT);
         ip_str[0] = 0;
@@ -81,6 +122,7 @@ static void on_wifi_event(void *, esp_event_base_t base, int32_t id, void *data)
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         const ip_event_got_ip_t *ev = (const ip_event_got_ip_t *)data;
         snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ev->ip_info.ip));
+        fail_reason = 0;
         ESP_LOGW(TAG, "ligado a \"%s\": http://%s/", g_settings.wifi_ssid, ip_str);
         xEventGroupSetBits(wifi_events, WIFI_CONNECTED_BIT);
         static bool sntp_started = false;    // UTC for FT8/FT4
@@ -89,6 +131,17 @@ static void on_wifi_event(void *, esp_event_base_t base, int32_t id, void *data)
             sntp_started = esp_netif_sntp_init(&cfg) == ESP_OK;
         }
     }
+}
+
+static void set_sta_config()
+{
+    wifi_config_t sta = {};
+    strlcpy((char *)sta.sta.ssid, g_settings.wifi_ssid, sizeof(sta.sta.ssid));
+    strlcpy((char *)sta.sta.password, g_settings.wifi_pass, sizeof(sta.sta.password));
+    // Scan every channel and join the strongest AP with this SSID (repeaters).
+    sta.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    sta.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta));
 }
 
 static void start_access_point()
@@ -125,15 +178,10 @@ static void wifi_start()
     targs.name = "wifi_retry";
     ESP_ERROR_CHECK(esp_timer_create(&targs, &retry_timer));
 
-    wifi_config_t sta = {};
-    strlcpy((char *)sta.sta.ssid, g_settings.wifi_ssid, sizeof(sta.sta.ssid));
-    strlcpy((char *)sta.sta.password, g_settings.wifi_pass, sizeof(sta.sta.password));
-    // Scan every channel and join the strongest AP with this SSID (repeaters).
-    sta.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
-    sta.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta));
+    set_sta_config();
     ESP_ERROR_CHECK(esp_wifi_start());
+    wifi_ready = true;
     // Radio always on (no modem-sleep bursts on the ADC, steadier latency)
     // and at reduced power.
     esp_wifi_set_ps(WIFI_PS_NONE);
@@ -838,14 +886,62 @@ WebNetInfo web_net_info()
     info.started = web_started;
     info.connected = ip_str[0] != 0;
     info.ap = ap_active;
+    info.fail_reason = fail_reason;
     info.rssi = web_started ? wifi_rssi() : 0;
     strlcpy(info.ip, ip_str, sizeof(info.ip));
     return info;
 }
 
+bool web_scan_start()
+{
+    if (!wifi_ready || scanning)
+        return false;
+    scanning = true;
+    scan_state = 1;
+    if (!ip_str[0])
+        esp_wifi_disconnect();    // a scan cannot run while a join is in progress
+    wifi_scan_config_t sc = {};
+    sc.show_hidden = false;
+    if (esp_wifi_scan_start(&sc, false) != ESP_OK) {
+        scanning = false;
+        scan_state = 0;
+        return false;
+    }
+    return true;
+}
+
+int web_scan_result(WebScanEntry *out, int max, int *n)
+{
+    *n = 0;
+    if (scan_state != 2)
+        return scan_state;
+    *n = scan_count < max ? scan_count : max;
+    memcpy(out, scan_list, *n * sizeof(WebScanEntry));
+    return 2;
+}
+
+bool web_connect(const char *ssid, const char *pass)
+{
+    strlcpy(g_settings.wifi_ssid, ssid, sizeof(g_settings.wifi_ssid));
+    strlcpy(g_settings.wifi_pass, pass, sizeof(g_settings.wifi_pass));
+    settings_save();
+    if (!wifi_ready)
+        return false;
+    ESP_LOGW(TAG, "nova rede Wi-Fi \"%s\"", ssid);
+    fail_reason = 0;
+    ip_str[0] = 0;
+    set_sta_config();
+    esp_wifi_disconnect();
+    esp_wifi_connect();
+    return true;
+}
+
 #else  // !WEB_UI
 
 void web_start() {}
+bool web_scan_start() { return false; }
+int web_scan_result(WebScanEntry *, int, int *n) { *n = 0; return 0; }
+bool web_connect(const char *, const char *) { return false; }
 
 WebNetInfo web_net_info()
 {
