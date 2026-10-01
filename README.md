@@ -38,6 +38,13 @@ A entrada de áudio usa o **ADC interno** do ESP32-S3 (GPIO2 na Freenove, header
 
 Máximo ~2,8 Vpp. **Não ligues uma saída de rádio desconhecida diretamente**; começa com uma fonte de baixo nível. Detalhes em [docs/HARDWARE.md](docs/HARDWARE.md).
 
+### Ecrã
+
+<p align="center">
+  <img src="docs/image_1.jpg" alt="Separador RX: espectro e waterfall" width="380">
+  <img src="docs/image_2.jpg" alt="Separador FT8: mensagens descodificadas" width="380">
+</p>
+
 ### Exemplos de imagens recebidas (SSTV)
 
 <p align="center">
@@ -99,6 +106,13 @@ Audio input uses the ESP32-S3 **internal ADC** (GPIO2 on the Freenove, header P3
 | R2 10 kΩ | input GPIO → GND |
 
 Maximum ~2.8 Vpp. **Do not connect an unknown radio output directly**; start with a known low-level source. See [docs/HARDWARE.md](docs/HARDWARE.md) (in Portuguese).
+
+### Display
+
+<p align="center">
+  <img src="docs/image_1.jpg" alt="RX tab: spectrum and waterfall" width="380">
+  <img src="docs/image_2.jpg" alt="FT8 tab: decoded messages" width="380">
+</p>
 
 ### Sample decoded images (SSTV)
 
