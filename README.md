@@ -64,7 +64,7 @@ pio device monitor
 
 Se a Freenove não aparecer no PC: carrega em **BOOT**, carrega e larga **RESET**, e larga **BOOT**.
 
-Para usar a página web, no primeiro arranque liga-te à rede **`RX-Analyzer`** (password `rxanalyzer`) e abre `http://192.168.4.1/`. Muda esta password se fores deixar a placa ligada.
+Na Freenove, o Wi-Fi configura-se no próprio ecrã: **⚙ → Redes Wi-Fi...**, escolhes a rede e escreves a password no teclado do ecrã. Depois a página web fica em `http://<endereço mostrado no ecrã>/`. Na DevKitC (sem ecrã), no primeiro arranque liga-te à rede **`RX-Analyzer`** (password `rxanalyzer`), abre `http://192.168.4.1/` e escolhe aí a tua rede; muda esta password se deixares a placa ligada.
 
 ### Estado do projeto
 
@@ -133,7 +133,7 @@ pio device monitor
 
 If the Freenove isn't detected by the PC: hold **BOOT**, press and release **RESET**, then release **BOOT**.
 
-To use the web page, on first boot join the **`RX-Analyzer`** Wi-Fi network (password `rxanalyzer`) and open `http://192.168.4.1/`. Change this password if you leave the board running.
+On the Freenove, Wi-Fi is set up on the board itself: **⚙ → Wi-Fi networks...**, pick the network and type the password on the on-screen keyboard. The web page is then at `http://<address shown on the screen>/`. On the DevKitC (no display), on first boot join the **`RX-Analyzer`** network (password `rxanalyzer`), open `http://192.168.4.1/` and choose your network there; change this password if you leave the board running.
 
 ### Status
 
