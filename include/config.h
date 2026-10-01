@@ -120,6 +120,24 @@
 #define FAX_DEFAULT_IOC     576
 #define FAX_MAX_LINES       3000    // an image ends here if no stop tone comes
 #define FAX_CLOCK_PPM       0.0f    // extra slant correction on top of the measured rate
+// Noise rejection on the image path (tools/fax_sim.py has the same values).
+#define FAX_SQ_ENV_TC       0.5f    // s: time constant of the mean carrier amplitude
+#define FAX_SQ_SMOOTH       0.002f  // s: smoothing of the amplitude compared with it
+#define FAX_SQ_LEVEL        0.2f    // below this share of the mean amplitude: white
+// Line length tracking and jump resync, from the content of each line against
+// the last line it matched (a noisy line is not used as the reference).
+#define FAX_TRK_LAGS        12      // line pairs per slope estimate
+#define FAX_TRK_MAX_LAG     3       // px: drift counted for the slope
+#define FAX_TRK_MIN_STD     0.08f   // lines flatter than this carry no information
+#define FAX_TRK_DEADBAND    0.05f   // px per line
+#define FAX_TRK_GAIN        0.7f
+#define FAX_TRK_LIMIT       0.005f  // line length within 0.5% of the nominal
+#define FAX_REF_CORR        0.6f    // a line this similar to the reference becomes the reference
+#define FAX_REF_AGE         8       // lines
+#define FAX_JUMP_MAX_LAG    12      // px searched either way
+#define FAX_JUMP_MIN        2.0f    // px: a bigger shift is a jump of the signal, not a slope
+#define FAX_JUMP_MIN_CORR   0.4f
+#define FAX_JUMP_MARGIN     0.15f   // correlation over the zero-shift one
 
 // FT8 / FT4 (ft8_lib): UTC time from NTP (pool.ntp.org) or from the web page
 #define FTX_NTP_SERVER      "pool.ntp.org"

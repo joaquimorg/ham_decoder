@@ -6,5 +6,6 @@
 
 void fm_demod_init();
 
-// hz[i] = instantaneous frequency (Hz) of x[i]; n <= FFT_SIZE.
-void fm_demod_process(const float *x, float *hz, int n);
+// hz[i] = instantaneous frequency (Hz) of x[i]; n <= FFT_SIZE. mag[i], if given,
+// is the amplitude of the filtered carrier (0 where there is no signal).
+void fm_demod_process(const float *x, float *hz, int n, float *mag = nullptr);

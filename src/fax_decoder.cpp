@@ -4,9 +4,16 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "config.h"
 #include "ui_hub.h"
+
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#else
+#define EXT_RAM_BSS_ATTR
+#endif
 
 // Algorithm mirrored and validated off-target in tools/fax_sim.py. Keep both
 // in sync.
@@ -92,6 +99,19 @@ float tone_for = 0.0f;           // start tone the filter is set for
 double sum = 0.0, sum2 = 0.0;
 int win_n = 0, start_run = 0, stop_run = 0;
 
+// Image path: weak signal -> white (squelch), then a median of 5 against impulses.
+float sq_env = -1.0f, sq_smooth = 0.0f;
+float med_hist[5];
+bool med_primed = false;
+
+// Line length tracking.
+// Internal RAM is tight (Wi-Fi, web server): these live in PSRAM.
+EXT_RAM_BSS_ATTR float trk_prev[W];
+EXT_RAM_BSS_ATTR float trk_cur[W];
+bool trk_has_prev = false;
+float trk_lags[FAX_TRK_LAGS];
+int trk_n = 0;
+
 float nominal_line()
 {
     return rate * 60.0f / lpm * (1.0f + FAX_CLOCK_PPM * 1e-6f) * slant;
@@ -123,6 +143,8 @@ void begin_image(bool phasing)
     acc_n = 0;
     lines = image_lines = 0;
     n_ph = ph_misses = ph_excused = 0;
+    trk_has_prev = false;
+    trk_n = 0;
     state = phasing ? FAX_PHASING : FAX_RECEIVING;
 }
 
@@ -177,6 +199,89 @@ bool looks_like_phasing()
     }
     const float mean = sum / n;
     return sq / n - mean * mean < PHASE_FLAT * PHASE_FLAT;
+}
+
+// Line length and jumps of the signal, from the content of the line against the
+// last line that matched it (a noisy line is not used as the reference, up to
+// FAX_REF_AGE lines). A shift of FAX_JUMP_MIN px or more at once is the signal
+// jumping (the audio lost or gained samples): the line start moves with it. A
+// small one is the line length being off: every FAX_TRK_LAGS lines the median
+// corrects it. Mirrored in fax_sim.py (track_line).
+void track_line()
+{
+    constexpr int L = FAX_JUMP_MAX_LAG;
+    static float prev_norm = 0.0f;
+    static int ref_age = 1;
+    const float flat = FAX_TRK_MIN_STD * sqrtf((float)W);
+    float mean = 0.0f;
+    for (int i = 0; i < W; i++)
+        mean += line[i];
+    mean /= W;
+    float norm = 0.0f;
+    for (int i = 0; i < W; i++) {
+        trk_cur[i] = line[i] - mean;
+        norm += trk_cur[i] * trk_cur[i];
+    }
+    norm = sqrtf(norm);
+    if (norm < flat) {
+        ref_age++;
+        return;
+    }
+    bool good = false;
+    if (trk_has_prev && ref_age <= FAX_REF_AGE) {
+        float c[2 * L + 3];    // correlation at lags -(L+1) .. L+1
+        for (int k = -L - 1; k <= L + 1; k++) {
+            float d = 0.0f;
+            for (int i = 0; i < W; i++)
+                d += trk_prev[i] * trk_cur[(i + k + W) % W];
+            c[k + L + 1] = d / (norm * prev_norm);
+        }
+        int k = 1;
+        for (int j = 2; j <= 2 * L + 1; j++)
+            if (c[j] > c[k])
+                k = j;
+        // Repeating content (text, stripes) has several peaks: take the nearest one.
+        for (int j = 1; j <= 2 * L + 1; j++)
+            if (c[j] >= 0.9f * c[k] && c[j] >= c[j - 1] && c[j] >= c[j + 1] && abs(j - (L + 1)) < abs(k - (L + 1)))
+                k = j;
+        const float den = c[k - 1] - 2.0f * c[k] + c[k + 1];
+        float frac = den < 0.0f ? 0.5f * (c[k - 1] - c[k + 1]) / den : 0.0f;
+        frac = frac < -0.5f ? -0.5f : frac > 0.5f ? 0.5f : frac;
+        const float lag = (float)(k - (L + 1)) + frac;
+        good = c[k] >= FAX_REF_CORR;
+        if (fabsf(lag) >= FAX_JUMP_MIN && c[k] >= FAX_JUMP_MIN_CORR && c[k] - c[L + 1] >= FAX_JUMP_MARGIN) {
+            pos -= lag * line_samples / W;
+            trk_n = 0;
+            trk_has_prev = false;    // the next line is not comparable with this one
+            return;
+        }
+        if (good && ref_age == 1 && fabsf(lag) <= FAX_TRK_MAX_LAG && trk_n < FAX_TRK_LAGS)
+            trk_lags[trk_n++] = lag;
+    }
+    if (good || !trk_has_prev || ref_age >= FAX_REF_AGE) {
+        memcpy(trk_prev, trk_cur, sizeof(trk_prev));
+        prev_norm = norm;
+        trk_has_prev = true;
+        ref_age = 1;
+    } else {
+        ref_age++;
+    }
+    if (trk_n < FAX_TRK_LAGS)
+        return;
+    for (int i = 1; i < trk_n; i++) {    // insertion sort, then the median
+        const float v = trk_lags[i];
+        int j = i - 1;
+        for (; j >= 0 && trk_lags[j] > v; j--)
+            trk_lags[j + 1] = trk_lags[j];
+        trk_lags[j + 1] = v;
+    }
+    const float d = trk_n % 2 ? trk_lags[trk_n / 2] : 0.5f * (trk_lags[trk_n / 2 - 1] + trk_lags[trk_n / 2]);
+    trk_n = 0;
+    if (fabsf(d) < FAX_TRK_DEADBAND)
+        return;
+    slant *= 1.0f + FAX_TRK_GAIN * d / W;
+    slant = slant < 1.0f - FAX_TRK_LIMIT ? 1.0f - FAX_TRK_LIMIT : slant > 1.0f + FAX_TRK_LIMIT ? 1.0f + FAX_TRK_LIMIT : slant;
+    line_samples = nominal_line();
 }
 
 void send_line()
@@ -337,6 +442,7 @@ void end_of_line()
     line_samples = nominal_line();
     if (lines < PHASE_MAX_LINES && looks_like_phasing())
         return;
+    track_line();
     send_line();
     if (image_lines >= FAX_MAX_LINES)
         end_image();
@@ -467,7 +573,38 @@ int fax_lines()
     return image_lines;
 }
 
-void fax_process(const float *hz, int n)
+// Image value 0..1 for one sample: weak carrier -> white, then a median of 5
+// (the output lags 2 samples; the tone detector sees the raw frequency).
+float image_value(float f, float m)
+{
+    constexpr float A_ENV = 1.0f / (FAX_SQ_ENV_TC * FS), A_SM = 1.0f / (FAX_SQ_SMOOTH * FS);
+    if (sq_env < 0.0f)
+        sq_env = sq_smooth = m;
+    sq_env += (m - sq_env) * A_ENV;
+    sq_smooth += (m - sq_smooth) * A_SM;
+    if (sq_smooth < FAX_SQ_LEVEL * sq_env)
+        f = WHITE_HZ;
+    if (!med_primed) {
+        for (float &h : med_hist)
+            h = f;
+        med_primed = true;
+    }
+    for (int i = 0; i < 4; i++)
+        med_hist[i] = med_hist[i + 1];
+    med_hist[4] = f;
+    float t[5];
+    for (int i = 0; i < 5; i++) {
+        float v = med_hist[i];
+        int j = i - 1;
+        for (; j >= 0 && t[j] > v; j--)
+            t[j + 1] = t[j];
+        t[j + 1] = v;
+    }
+    const float v = (t[2] - BLACK_HZ) / (WHITE_HZ - BLACK_HZ);
+    return v < 0.0f ? 0.0f : v > 1.0f ? 1.0f : v;
+}
+
+void fax_process(const float *hz, int n, const float *mag)
 {
     const float shift = req_shift;
     if (shift > 0.0f) {
@@ -481,6 +618,7 @@ void fax_process(const float *hz, int n)
             if (pos >= 0.0f)
                 pos -= line_samples;
             col_reset();
+            trk_has_prev = false;
         }
     }
     if (req_stop) {
@@ -494,9 +632,9 @@ void fax_process(const float *hz, int n)
     }
     for (int i = 0; i < n; i++) {
         tone_sample(hz[i]);
-        if (state != FAX_IDLE) {
-            const float v = (hz[i] - BLACK_HZ) / (WHITE_HZ - BLACK_HZ);
-            add_sample(v < 0.0f ? 0.0f : v > 1.0f ? 1.0f : v);
-        }
+        // Always run, so the filters are settled when an image starts.
+        const float v = image_value(hz[i], mag ? mag[i] : 1.0f);
+        if (state != FAX_IDLE)
+            add_sample(v);
     }
 }

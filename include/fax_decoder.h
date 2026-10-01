@@ -27,5 +27,6 @@ void fax_request_shift(float share);
 FaxState fax_state();
 int fax_lines();                  // lines of the current image
 
-// hz: instantaneous frequency from fm_demod_process().
-void fax_process(const float *hz, int n);
+// hz: instantaneous frequency from fm_demod_process(); mag: its amplitude (a weak
+// signal is shown white, not as noise).
+void fax_process(const float *hz, int n, const float *mag = nullptr);

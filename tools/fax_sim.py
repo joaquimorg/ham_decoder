@@ -18,10 +18,21 @@ PHASE_TOL, PHASE_MAX_LINES, PHASE_FLAT = W // 100, 80, 0.15
 PH_MIN, PH_MAX, PH_END_MISSES, PH_OUTLIER, PH_RMS, SLANT_MAX = 12, 64, 1, 6.0, 3.0, 0.003
 PH_EDGE_EXCUSE, PH_SEG_MIN = 2, 3
 MAX_LINES = 3000
+# Squelch / noise rejection (mirrors FAX_SQUELCH_* in config.h)
+SQ_ENV_TC, SQ_SMOOTH, SQ_LEVEL = 0.5, 0.002, 0.2     # s, s, share of the mean amplitude
+# Line-length tracking (mirrors FAX_TRACK_* in config.h)
+TRK_LAGS, TRK_MAX_LAG, TRK_MIN_STD = 12, 3, 0.08
+JUMP_REF_AGE = 8      # lines
+JUMP_MAX_LAG, JUMP_MIN, JUMP_MIN_CORR, JUMP_MARGIN, REF_CORR = 12, 2.0, 0.4, 0.15, 0.6   # px, px, -, over the zero lag
+TRK_DEADBAND, TRK_GAIN, TRK_LIMIT = 0.05, 0.7, 0.005
 
 
 def fm_demod(x):
-    """Instantaneous frequency, as fm_demod_process()."""
+    return fm_demod_mag(x)[0]
+
+
+def fm_demod_mag(x):
+    """Instantaneous frequency and amplitude, as fm_demod_process()."""
     fc = FM_CUTOFF / FS
     m = np.arange(FM_TAPS) - (FM_TAPS - 1) / 2
     taps = np.where(m == 0, 2 * fc, np.sin(2 * np.pi * fc * m) / (np.pi * np.where(m == 0, 1, m)))
@@ -30,7 +41,24 @@ def fm_demod(x):
     n = np.arange(len(x))
     z = np.convolve(x * np.exp(-2j * np.pi * FM_CENTER / FS * n), taps)[:len(x)]
     prev = np.concatenate(([1 + 0j], z[:-1]))
-    return FM_CENTER + np.angle(z * np.conj(prev)) * FS / (2 * np.pi)
+    return FM_CENTER + np.angle(z * np.conj(prev)) * FS / (2 * np.pi), np.abs(z)
+
+
+def clean_hz(hz, mag):
+    """What fax_process() feeds the image: squelch (weak signal -> white), median of 5 against impulses (delayed by 2 samples)."""
+    n = len(hz)
+    a_f = 1.0 / (SQ_ENV_TC * FS)
+    a_s = 1.0 / (SQ_SMOOTH * FS)
+    env = np.empty(n)
+    sm = np.empty(n)
+    e = sm_ = float(mag[:int(FS * 0.1)].mean()) if n else 0.0
+    for i in range(n):                       # same recursions as the C++ (one pole each)
+        e += (mag[i] - e) * a_f
+        sm_ += (mag[i] - sm_) * a_s
+        env[i], sm[i] = e, sm_
+    out = np.where(sm < SQ_LEVEL * env, WHITE, hz)
+    pad = np.pad(out, 2, mode='edge')
+    return np.median(np.lib.stride_tricks.sliding_window_view(pad, 5), axis=1)
 
 
 class Fax:
@@ -63,6 +91,10 @@ class Fax:
         self.pos, self.col, self.acc, self.acc_n = 0.0, 0, 0.0, 0
         self.line = np.zeros(W)
         self.lines = 0
+        self.prev_line, self.prev_norm, self.ref_age = None, 0.0, 1
+        self.jumps = []
+        self.lags = []
+        self.track = True
         self.ph = []                  # (line, pulse column, at the edge, segment)
         self.ph_misses = 0
         self.ph_excused = 0
@@ -179,9 +211,56 @@ class Fax:
             return
         if self.lines < PHASE_MAX_LINES and self.looks_like_phasing():
             return
+        self.track_line()
         self.image.append(self.line.copy())
         if len(self.image) >= MAX_LINES:
             self.end(t, 'max')
+
+    def track_line(self):
+        """Line length and jumps from the drift of the content against the last line it
+        matched (a noisy line is not used as the reference, up to JUMP_REF_AGE lines)."""
+        cur = self.line - self.line.mean()
+        nb = np.linalg.norm(cur)
+        if not self.track or nb / math.sqrt(W) < TRK_MIN_STD:
+            self.ref_age += 1
+            return
+        prev, na = self.prev_line, self.prev_norm
+        good = False
+        if prev is not None and self.ref_age <= JUMP_REF_AGE:
+            L = JUMP_MAX_LAG
+            c = [float(np.dot(prev, np.roll(cur, -k))) / (na * nb) for k in range(-L - 1, L + 2)]
+            k = int(np.argmax(c[1:-1])) + 1          # index in c; lag = k - (L + 1)
+            # Repeating content (text, stripes) has several peaks: take the nearest one.
+            for j in range(1, 2 * L + 2):
+                if c[j] >= 0.9 * c[k] and c[j] >= c[j - 1] and c[j] >= c[j + 1] and abs(j - (L + 1)) < abs(k - (L + 1)):
+                    k = j
+            den = c[k - 1] - 2 * c[k] + c[k + 1]
+            frac = max(-0.5, min(0.5, 0.5 * (c[k - 1] - c[k + 1]) / den)) if den < 0 else 0.0
+            lag = k - (L + 1) + frac
+            good = c[k] >= REF_CORR
+            if abs(lag) >= JUMP_MIN and c[k] >= JUMP_MIN_CORR and c[k] - c[L + 1] >= JUMP_MARGIN:
+                # The signal jumped (the audio lost or gained samples): move the start
+                # of the next lines by it, and leave the slope estimate alone.
+                self.pos -= lag * self.line_samples / W
+                self.lags = []
+                self.prev_line = None             # the next line is not comparable with this one
+                self.jumps.append((len(self.image), round(lag, 1), self.ref_age))
+                return
+            if good and self.ref_age == 1 and abs(lag) <= TRK_MAX_LAG:
+                self.lags.append(lag)
+        if good or prev is None or self.ref_age >= JUMP_REF_AGE:
+            self.prev_line, self.prev_norm, self.ref_age = cur, nb, 1
+        else:
+            self.ref_age += 1
+        if len(self.lags) < TRK_LAGS:
+            return
+        d = float(np.median(self.lags))
+        self.lags = []
+        if abs(d) < TRK_DEADBAND:
+            return
+        new = self.slant * (1 + TRK_GAIN * d / W)
+        self.slant = min(1 + TRK_LIMIT, max(1 - TRK_LIMIT, new))
+        self.line_samples = FS * 60.0 / self.lpm * self.slant
 
     def put_pixel(self):
         if self.acc_n:
@@ -217,12 +296,13 @@ class Fax:
             self.end(t, 'restart')
             self.begin(True, t)
 
-    def process(self, hz):
+    def process(self, hz, mag=None):
+        img = clean_hz(hz, mag) if mag is not None else hz
         for i, f in enumerate(hz):
             t = i / FS
             self.tone_sample(f, t)
             if self.state != 'idle':
-                self.add_sample(min(1.0, max(0.0, (f - BLACK) / (WHITE - BLACK))), t)
+                self.add_sample(min(1.0, max(0.0, (img[i] - BLACK) / (WHITE - BLACK))), t)
 
     def finish(self, t):
         self.end(t, 'eof')
@@ -298,7 +378,7 @@ def run_case(name, lpm=120, ioc=576, lines=120, **kw):
     img = test_pattern(lines)
     x = transmit(img, lpm, ioc, **kw)
     fax = Fax(lpm, ioc)
-    fax.process(fm_demod(x))
+    fax.process(*fm_demod_mag(x))
     fax.finish(len(x) / FS)
     got = fax.images[0] if fax.images else []
     err, n = compare(got, img, lpm)
@@ -357,11 +437,11 @@ def run_file(args):
     if rate != FS:
         x = np.interp(np.arange(0, len(x), rate / FS), np.arange(len(x)), x)
     fax = Fax(lpm, ioc, auto=True)
-    hz = fm_demod(x)
-    fax.process(hz)
+    hz, mag = fm_demod_mag(x)
+    fax.process(hz, mag)
     if not fax.images and fax.state == 'idle':
         fax.begin(False, 0)            # no start tone found: decode everything
-        fax.process(hz)
+        fax.process(hz, mag)
     fax.finish(len(x) / FS)
     print(fax.events)
     for k, img in enumerate(fax.images):

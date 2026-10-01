@@ -36,7 +36,7 @@ void fm_demod_init()
     rot_i = sinf(w);
 }
 
-void fm_demod_process(const float *x, float *hz, int n)
+void fm_demod_process(const float *x, float *hz, int n, float *mag)
 {
     constexpr float SCALE = FS / (2.0f * (float)M_PI);
     for (int i = 0; i < n; i++) {
@@ -60,6 +60,8 @@ void fm_demod_process(const float *x, float *hz, int n)
             zr += taps[k] * hr[k];
             zi += taps[k] * hi[k];
         }
+        if (mag)
+            mag[i] = sqrtf(zr * zr + zi * zi);
         // Phase step between samples = frequency offset from the centre.
         const float dr = zr * prev_r + zi * prev_i;
         const float di = zi * prev_r - zr * prev_i;

@@ -543,7 +543,7 @@ void analyzer_process_block(const float *x, int32_t raw_peak, uint32_t overruns)
                            sstv_receiving());
     cw_process(x, N);
     rtty_process(x, N);
-    static float fm_hz[N];
+    static float fm_hz[N], fm_mag[N];
     // Blocks dropped since the last one (analysis behind): FAX and SSTV count
     // time in samples, so they get the missing samples as a mid-grey tone
     // rather than having every later line shifted sideways.
@@ -555,8 +555,8 @@ void analyzer_process_block(const float *x, int32_t raw_peak, uint32_t overruns)
             sstv_process(fm_hz, N);
         }
     }
-    fm_demod_process(x, fm_hz, N);
-    fax_process(fm_hz, N);
+    fm_demod_process(x, fm_hz, N, fm_mag);
+    fax_process(fm_hz, N, fm_mag);
     sstv_process(fm_hz, N);
     ftx_process(x, N);
 
