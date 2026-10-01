@@ -1,274 +1,140 @@
 # RX Analyzer
 
-Projeto evolutivo para um descodificador/analisador de sinais de rádio autónomo.
+**🇵🇹 [Português](#-português) · 🇬🇧 [English](#-english)**
 
-## Objetivo
+<p align="center">
+  <img src="docs/FNK0104S_Top.png" alt="Freenove FNK0104S — top / frente" width="380">
+  <img src="docs/FNK0104S_Bottom.png" alt="Freenove FNK0104S — bottom / verso" width="380">
+</p>
 
-Criar um equipamento baseado em ESP32-S3 capaz de:
+---
 
-- receber áudio de um rádio;
-- analisar espectro e waterfall;
-- identificar automaticamente o tipo de transmissão;
-- descodificar CW, RTTY, FSK, PSK e outros modos;
-- apresentar informação num display;
-- usar TinyML para classificação de sinais;
-- funcionar de forma autónoma, sem PC.
+## 🇵🇹 Português
 
-## Hardware
+Descodificador/analisador de sinais de rádio **autónomo**, baseado em ESP32-S3. Liga-se à saída de áudio de um rádio (HF/VHF), analisa o espetro e descodifica o sinal sem precisar de PC.
 
-- **Freenove FNK0104S** (placa final): ESP32-S3R8 (8 MB PSRAM octal), 16 MB de flash, LCD de 4" 480×320 (ST7796) com touch capacitivo (FT6336U), codec ES8311, cartão SD, bateria e USB-C. Esquema em [docs/4.0inch_ESP32-S3_Display_Schematic.pdf](docs/4.0inch_ESP32-S3_Display_Schematic.pdf).
-- em alternativa, **ESP32-S3 DevKitC-1 N16R8** (sem LCD, só a página web)
-- entrada de áudio: **ADC interno do ESP32-S3**. Na Freenove, o codec ES8311 (I2S) fica para uma fase seguinte; ver [docs/HARDWARE.md](docs/HARDWARE.md)
-- fonte de áudio de teste
-- USB para alimentação/programação
+### O que faz
 
-### Entrada de áudio
+- **Espectro e waterfall** em tempo real, com deteção e classificação automática do sinal (ruído, tom, CW, RTTY/FSK, PSK31, voz), por heurística e por um modelo **TinyML** (MLP int8) a correr na própria placa.
+- **CW (Morse)** e **RTTY** (Baudot, 45,45 / 50 / 75 baud), com estimativa de WPM, AFC e polaridade automática.
+- **FAX meteorológico (WEFAX)** e **SSTV** (Martin, Scottie, Robot, PD), com imagens apresentadas ao vivo.
+- **FT8 / FT4**, com a biblioteca [ft8_lib](components/ft8_lib/README.md) (MIT).
+- **Ecrã LCD com touch** de 4" (interface em português e inglês) e, opcionalmente, uma **página web** por Wi-Fi com os mesmos dados.
 
-O pino de entrada depende da placa:
+### Hardware
 
-- **Freenove FNK0104S:** GPIO2, no header **P3 pino 1** (IO2). O GPIO1 desta placa é o enable do amplificador do altifalante.
-- **DevKitC:** GPIO1 (J3 pino 4).
+| Placa | Notas |
+|---|---|
+| **Freenove FNK0104S** (placa principal) | ESP32-S3R8 (8 MB PSRAM), 16 MB flash, LCD 4" 480×320 (ST7796) com touch capacitivo (FT6336U), codec ES8311, cartão SD, bateria, USB-C. [Esquema](docs/4.0inch_ESP32-S3_Display_Schematic.pdf) |
+| **ESP32-S3 DevKitC-1 N16R8** (alternativa) | Sem LCD; usa-se só a página web. |
+
+A entrada de áudio usa o **ADC interno** do ESP32-S3 (GPIO2 na Freenove, header P3 pino 1; GPIO1 na DevKitC), com um circuito simples de polarização:
 
 | Componente | Ligação |
 |---|---|
 | C1 1 µF | áudio in → GPIO de entrada |
 | R1 10 kΩ | 3V3 → GPIO de entrada |
 | R2 10 kΩ | GPIO de entrada → GND |
-| massa do áudio | GND |
 
-Máximo ~2,8 Vpp na entrada. Esquema, a ligação do PCM1808 e os GPIOs a evitar estão em [docs/HARDWARE.md](docs/HARDWARE.md).
+Máximo ~2,8 Vpp. **Não ligues uma saída de rádio desconhecida diretamente**; começa com uma fonte de baixo nível. Detalhes em [docs/HARDWARE.md](docs/HARDWARE.md).
 
-## Firmware atual
+### Exemplos de imagens recebidas (SSTV)
 
-1. captura áudio a 48 kHz com o ADC1 interno (12 bits);
-2. remove a polarização DC e decima para 12 kHz;
-3. calcula FFT, ruído de fundo e picos;
-4. classifica o sinal (ruído, tom, CW, FSK/RTTY, voz);
-5. descodifica CW (Morse) no tom detetado e RTTY (Baudot, 45,45/50/75 baud) nos dois tons FSK detetados;
-6. descodifica imagens **FAX** (WEFAX 60/90/120/240 lpm, IOC 576/288) e **SSTV** (Martin, Scottie, Robot, PD), e mensagens **FT8/FT4** (com a biblioteca [ft8_lib](components/ft8_lib/README.md));
-7. escreve no monitor série o texto CW e as mudanças de sinal; com `SERIAL_REPORT 2` em `config.h`, escreve também a linha completa do waterfall em texto a cada segundo;
-8. classifica o sinal também com um modelo **TinyML** (rede MLP int8, ver abaixo);
-9. mostra tudo no **LCD com touch** da Freenove (ver abaixo);
-10. serve uma **página web** por Wi-Fi com espectro, waterfall, classificação, texto CW/RTTY, imagens FAX/SSTV, mensagens FT8/FT4 e configuração. A página web é **opcional**.
+<p align="center">
+  <img src="docs/SSTV_Martin_M2_202609242042.png" alt="SSTV Martin M2" width="300">
+  <img src="docs/SSTV_Scottie_S2_202609242035.png" alt="SSTV Scottie S2" width="300">
+</p>
 
-Os descodificadores entregam o resultado a `src/ui_hub.cpp`. O LCD e a página web leem daí, cada um ao seu ritmo, e nenhum depende do outro.
+### Compilar e gravar
 
-## Ecrã (LCD)
-
-Só na Freenove FNK0104S (`LCD_UI` em `config.h`). Ecrã em paisagem, com uma barra de estado em cima (tipo de sinal, SNR, Wi-Fi) e cinco separadores em baixo:
-
-- **RX:** espectro e waterfall, e as duas últimas linhas de CW e de RTTY.
-  - Tocar no espectro ou no waterfall fixa o tom do CW nesse ponto (linha branca no espectro).
-  - Um toque longo volta ao tom automático.
-- **Texto:** as últimas 25 linhas de CW e de RTTY, cada canal com um botão **Limpar**.
-- **FT8:** o modo (Desligado / FT8 / FT4), o estado e as mensagens, com as mais recentes no topo (ficam 50).
-- **Imagem:** a imagem FAX/SSTV em curso, com os botões **FAX** (iniciar agora) e **Parar**.
-  - O FAX ocupa a largura toda: as linhas mais recentes ficam em baixo e as antigas saem por cima. O SSTV aparece inteiro.
-  - Tocar na imagem troca entre as duas vistas (largura toda / imagem inteira).
-- **⚙ Definições:**
-  - idioma (**Português / English**, muda logo);
-  - CW, RTTY, FAX e SSTV (as mesmas da página web);
-  - brilho;
-  - Wi-Fi/página web ligada ou desligada, com o botão Reiniciar;
-  - informação da placa.
-
-As definições ficam guardadas na placa (NVS).
-
-As fontes do ecrã são a Montserrat com os caracteres acentuados, porque as do LVGL só trazem ASCII. Estão em `components/ui_fonts` e voltam a gerar-se com `tools/gen_fonts.sh`.
-
-## Interface web
-
-A página web é opcional:
-
-- `WEB_UI 0` em `config.h` tira da compilação o Wi-Fi e a página.
-- Com `WEB_UI 1`, liga-se e desliga-se no LCD em **⚙ → Wi-Fi e página web**, e aplica-se ao reiniciar.
-- Sem Wi-Fi não há hora UTC por NTP, e o FT8/FT4 não descodifica, porque a placa não tem RTC.
-
-1. **Primeiro arranque (sem rede configurada):** a placa cria a rede **`RX-Analyzer`**, com a password `rxanalyzer`. Liga-te a ela e abre **http://192.168.4.1/**. Em "Rede Wi-Fi", escolhe a tua rede e carrega em "Guardar e reiniciar".
-2. **A partir daí** a placa liga-se à tua rede. O endereço aparece no monitor série (`WEB: ligado a "...": http://192.168.x.y/`). O nome `rx-analyzer` também é anunciado ao router, mas nem todos os routers o resolvem.
-3. Se a rede guardada falhar durante 20 s, a placa volta a abrir a `RX-Analyzer` e continua a tentar a tua rede em segundo plano.
-
-Na página:
-
-- **Dados em direto por WebSocket (`/ws`):** a placa envia, a cada 250 ms, as linhas novas do espetro (em binário) e o estado e o texto (em JSON). Se o WebSocket falhar 3 vezes seguidas, a página passa a pedir os dados a `/api/data` (indicador "ao vivo (pedidos)").
-- **Espectro e waterfall:** ~12 linhas por segundo.
-- **Tom do descodificador CW:** fica em automático, ou fixa-se em manual clicando no waterfall ou escrevendo a frequência.
-- **Sensibilidade (contraste mínimo):** as definições de CW e de Wi-Fi ficam guardadas na placa (NVS).
-- **Cores do waterfall:** ficam guardadas no browser.
-- **Texto CW e RTTY:** com botões para copiar e limpar. Ficam as últimas 30 linhas.
-- **FT8 / FT4:** escolhe o modo; aparece uma tabela (últimas 50, as mais recentes em cima) com hora UTC, SNR (dB em 2500 Hz, como o WSJT-X), DT, frequência e mensagem. A hora vem por NTP (`pool.ntp.org`). No ponto de acesso, sem internet, a placa usa a hora do browser.
-- **Imagem (FAX / SSTV):** o SSTV começa sozinho com o cabeçalho VIS. O FAX começa com o tom de início, alinha-se pelas linhas de fase e pára com o tom de fim; «Iniciar FAX agora» apanha uma emissão a meio. «Guardar PNG» grava a imagem com a proporção certa.
-
-Em alternativa, a rede pode vir já no firmware: copia `include/wifi_secrets.h.example` para `include/wifi_secrets.h`, que é ignorado pelo git.
-
-Os testes estão em [docs/TEST_PLAN.md](docs/TEST_PLAN.md).
-
-## Teste inicial
-
-1. Montar o circuito de entrada no GPIO2 (Freenove, header P3) ou no GPIO1 (DevKitC).
-2. Não ligar ainda uma saída de rádio desconhecida.
-3. Usar uma fonte de áudio de baixo nível conhecida.
-4. Compilar e gravar:
-   - Freenove (ambiente por omissão): `pio run -t upload`
-   - DevKitC: `pio run -e esp32-s3-devkitc-1 -t upload`
-
-   Na Freenove, a consola e a gravação vão pela USB-C nativa (USB-Serial/JTAG). Se a placa não aparecer no PC (por exemplo, num ciclo de reinícios), põe-na em modo de gravação: carrega em **BOOT** (KEY2), carrega e larga **RESET** (KEY1), e larga **BOOT**.
-
-5. Abrir:
-
-   `pio device monitor`
-
-6. Procurar `ADC started` e depois as linhas do waterfall.
-
-Com um tom, o tom aparece no waterfall.
-
-## Roadmap
-
-### V0.1 - Aquisição de áudio
-- [x] ESP32-S3
-- [x] ADC interno em contínuo
-- [ ] PCM1808 por I2S (módulos testados corrompem as amostras)
-- [x] RMS/peak
-- [ ] escolher o ADC definitivo (a seguir: o codec ES8311 da Freenove, por I2S)
-
-### V0.2 - DSP
-- [x] buffer de áudio
-- [x] DC removal
-- [ ] filtros (só decimação boxcar por agora)
-- [x] FFT
-- [x] frequência dominante
-- [ ] S-meter (há rms/pico em dBFS)
-- [x] deteção de sinal
-
-### V0.3 - CW
-- [x] detector de tom (sintonia a partir do espetro, mistura em quadratura)
-- [x] envelope (janela ~ponto/3, níveis por percentis)
-- [x] DIT/DAH
-- [x] timing adaptativo (marcas e espaços)
-- [x] decoder Morse
-- [x] estimativa WPM
-- [x] validar com gravação real (W1AW 30 wpm, sem erros com o ADC interno)
-- [ ] validar com o rádio
-
-### V0.4 - Display
-- [x] interface web (espectro, waterfall, texto, configuração), agora opcional
-- [x] LCD ST7796 480×320 com touch FT6336U (Freenove FNK0104S, LVGL 9)
-- [x] spectrum
-- [x] waterfall (toque fixa o tom do CW)
-- [x] modo
-- [x] SNR
-- [x] texto descodificado
-- [x] FT8/FT4, imagem FAX/SSTV e definições no LCD
-- [x] interface em português e inglês
-
-### V0.5 - RTTY/FSK
-- [x] FSK detector (dois picos no espetro, desvios de 170 a 850 Hz)
-- [x] AFC (segue os tons detetados, ressintoniza acima de 15 Hz)
-- [x] sincronização pelo bit de arranque (45,45 / 50 / 75 / 100 baud)
-- [x] ITA2/Baudot (LTRS/FIGS, unshift on space)
-- [x] RTTY 45.45 baud
-- [x] RTTY 170 Hz shift
-- [x] polaridade automática e squelch
-- [ ] validar com sinais reais do rádio
-
-### V0.6 - TinyML
-- [x] recolha de amostras (`ML_LOG_FEATURES` em `config.h` + `tools/ml/log_to_npz.py`)
-- [x] dataset (sintético: `tools/ml/synth.py`, com harmónicos, reverberação, fading e ruído de SSB)
-- [x] espectrogramas / features (espetro à volta do pico, bandas largas, espetro de modulação do envelope)
-- [x] modelo de classificação (MLP 110 → 32 → 16 → 6)
-- [x] quantização (pesos int8, uma escala por camada)
-- [x] inferência no ESP32-S3 (`src/classifier.cpp`)
-- [x] primeiro teste com o rádio (CW: estável em CW, onde a heurística alterna CW/TOM)
-- [x] treinar com exemplos reais do rádio: CW, RTTY (FSK 50 bd, shift 446 Hz), voz e PSK31; 175/180 segundos reais certos num conjunto de teste à parte
-
-Classes: RUIDO, TOM, CW, RTTY (inclui FSK), PSK31, VOZ.
-
-Treino (precisa de `numpy`):
+Requer [PlatformIO](https://platformio.org/).
 
 ```text
-python tools/ml/train.py                         # gera include/ml_model.h
-python tools/ml/classify_wav.py gravacao.wav     # testa o modelo num WAV
+pio run -t upload                              # Freenove FNK0104S (por omissão)
+pio run -e esp32-s3-devkitc-1 -t upload        # DevKitC
+pio device monitor
 ```
 
-Para juntar exemplos reais: `ML_LOG_FEATURES 1` e `ML_LOG_LABEL "CW"` em `config.h`, gravar o monitor com o rádio nesse modo, e depois
-`python tools/ml/log_to_npz.py logs/<ficheiro>.log -o real_cw.npz` e `python tools/ml/train.py --extra real_cw.npz`.
+Se a Freenove não aparecer no PC: carrega em **BOOT**, carrega e larga **RESET**, e larga **BOOT**.
 
-### V0.8 - FAX, SSTV, FT8/FT4
-- [x] discriminador FM partilhado (`src/fm_demod.cpp`)
-- [x] FAX: tons APT de início/fim, alinhamento pelas linhas de fase, 60/90/120/240 lpm, IOC 576/288
-- [x] SSTV: cabeçalho VIS, Martin M1/M2, Scottie S1/S2/DX, Robot 36/72, PD50/90/120/160/180/240, correção de inclinação pelos sincronismos
-- [x] FT8/FT4 com a ft8_lib (espectrograma na tarefa de análise, descodificação numa tarefa no core 0), hora por NTP
-- [x] validação no PC: `tools/fax_sim.py`, `tools/sstv_sim.py`, `tools/ftx_test/`
-- [ ] validar com sinais reais do rádio
+Para usar a página web, no primeiro arranque liga-te à rede **`RX-Analyzer`** (password `rxanalyzer`) e abre `http://192.168.4.1/`. Muda esta password se fores deixar a placa ligada.
 
-### V0.7 - SD Card
-- [ ] gravação de amostras
-- [ ] configuração
-- [ ] atualização de modelos
+### Estado do projeto
 
-### V1.0
-- [ ] caixa
-- [ ] bateria
-- [x] USB-C (Freenove)
-- [ ] entrada de áudio protegida
-- [ ] encoder
-- [ ] botões
-- [x] display (Freenove FNK0104S)
-- [ ] firmware integrado
+Em desenvolvimento. Validado com gravações e simuladores no PC e com alguns sinais reais; a validação completa com o rádio, a gravação em SD, a caixa e o codec ES8311 ainda estão por fazer.
 
-## Estrutura
+### Documentação
+
+- [docs/DETALHES.md](docs/DETALHES.md) — descrição técnica completa, ecrã, interface web, TinyML, roadmap e estrutura do código
+- [docs/HARDWARE.md](docs/HARDWARE.md) — ligações e GPIOs
+- [docs/TEST_PLAN.md](docs/TEST_PLAN.md) — plano de testes
+
+---
+
+## 🇬🇧 English
+
+A **standalone** radio signal decoder/analyzer built on the ESP32-S3. It connects to the audio output of a radio (HF/VHF), analyzes the spectrum and decodes the signal with no PC required.
+
+### Features
+
+- Real-time **spectrum and waterfall**, with automatic signal detection and classification (noise, tone, CW, RTTY/FSK, PSK31, voice), using both heuristics and an on-device **TinyML** model (int8 MLP).
+- **CW (Morse)** and **RTTY** (Baudot, 45.45 / 50 / 75 baud), with WPM estimation, AFC and automatic polarity.
+- **Weather FAX (WEFAX)** and **SSTV** (Martin, Scottie, Robot, PD), with live image display.
+- **FT8 / FT4**, using the [ft8_lib](components/ft8_lib/README.md) library (MIT).
+- **4" touch LCD** (Portuguese and English UI) and, optionally, a **web page** over Wi-Fi showing the same data.
+
+### Hardware
+
+| Board | Notes |
+|---|---|
+| **Freenove FNK0104S** (main board) | ESP32-S3R8 (8 MB PSRAM), 16 MB flash, 4" 480×320 LCD (ST7796) with capacitive touch (FT6336U), ES8311 codec, SD card, battery, USB-C. [Schematic](docs/4.0inch_ESP32-S3_Display_Schematic.pdf) |
+| **ESP32-S3 DevKitC-1 N16R8** (alternative) | No LCD; web page only. |
+
+Audio input uses the ESP32-S3 **internal ADC** (GPIO2 on the Freenove, header P3 pin 1; GPIO1 on the DevKitC) with a simple biasing network:
+
+| Part | Connection |
+|---|---|
+| C1 1 µF | audio in → input GPIO |
+| R1 10 kΩ | 3V3 → input GPIO |
+| R2 10 kΩ | input GPIO → GND |
+
+Maximum ~2.8 Vpp. **Do not connect an unknown radio output directly**; start with a known low-level source. See [docs/HARDWARE.md](docs/HARDWARE.md) (in Portuguese).
+
+### Sample decoded images (SSTV)
+
+<p align="center">
+  <img src="docs/SSTV_Martin_M2_202609242042.png" alt="SSTV Martin M2" width="300">
+  <img src="docs/SSTV_Scottie_S2_202609242035.png" alt="SSTV Scottie S2" width="300">
+</p>
+
+### Build and flash
+
+Requires [PlatformIO](https://platformio.org/).
 
 ```text
-rx_analyzer/
-├── platformio.ini
-├── README.md
-├── include/
-│   ├── config.h
-│   ├── audio_source.h
-│   ├── analyzer.h
-│   ├── cw_decoder.h
-│   ├── rtty_decoder.h
-│   ├── fm_demod.h
-│   ├── fax_decoder.h
-│   ├── sstv_decoder.h
-│   ├── ftx_core.h
-│   ├── ftx_decoder.h
-│   ├── settings.h
-│   ├── ui_hub.h
-│   ├── lcd_ui.h
-│   ├── web_ui.h
-│   └── web_page.inc     (página web embutida)
-├── components/
-│   ├── ft8_lib/         (biblioteca FT8/FT4, MIT)
-│   └── ui_fonts/        (fontes do LCD com acentos)
-├── src/
-│   ├── idf_component.yml (LVGL, esp_lvgl_port, esp_lcd_st7796)
-│   ├── main.cpp
-│   ├── pcm1808_source.cpp
-│   ├── adc_source.cpp
-│   ├── analyzer.cpp
-│   ├── cw_decoder.cpp
-│   ├── rtty_decoder.cpp
-│   ├── fm_demod.cpp     (discriminador FM para FAX e SSTV)
-│   ├── fax_decoder.cpp
-│   ├── sstv_decoder.cpp
-│   ├── ftx_core.cpp     (FT8/FT4: períodos e descodificação, sem ESP-IDF)
-│   ├── ftx_decoder.cpp  (FT8/FT4 na placa: hora UTC e tarefa de descodificação)
-│   ├── capture.cpp
-│   ├── settings.cpp     (definições em NVS)
-│   ├── ui_hub.cpp       (dados para o LCD e para a página web)
-│   ├── lcd_ui.cpp       (LCD + touch, LVGL)
-│   └── web_ui.cpp       (Wi-Fi + servidor HTTP, opcional)
-├── tools/
-│   ├── cw_sim.py        (simulação do decoder CW no PC)
-│   ├── rtty_sim.py      (simulação do decoder RTTY e gerador de WAV de teste)
-│   ├── fax_sim.py       (simulação do decoder FAX e gerador de WAV de teste)
-│   ├── sstv_sim.py      (simulação do decoder SSTV e gerador de WAV de teste)
-│   ├── ftx_test/        (teste do FT8/FT4 no PC, em C++)
-│   ├── gen_fonts.sh     (gera as fontes do LCD)
-│   └── capture_to_wav.py
-└── docs/
-    ├── ROADMAP.md
-    ├── HARDWARE.md
-    └── TEST_PLAN.md
+pio run -t upload                              # Freenove FNK0104S (default)
+pio run -e esp32-s3-devkitc-1 -t upload        # DevKitC
+pio device monitor
 ```
+
+If the Freenove isn't detected by the PC: hold **BOOT**, press and release **RESET**, then release **BOOT**.
+
+To use the web page, on first boot join the **`RX-Analyzer`** Wi-Fi network (password `rxanalyzer`) and open `http://192.168.4.1/`. Change this password if you leave the board running.
+
+### Status
+
+Work in progress. Validated with recordings and PC simulators and some real signals; full on-air validation, SD recording, enclosure and the ES8311 codec are still to do.
+
+### Documentation
+
+Technical documentation is currently in Portuguese:
+
+- [docs/DETALHES.md](docs/DETALHES.md) — full technical description, display, web UI, TinyML, roadmap and code layout
+- [docs/HARDWARE.md](docs/HARDWARE.md) — wiring and GPIOs
+- [docs/TEST_PLAN.md](docs/TEST_PLAN.md) — test plan
+
+---
+
+## Licença / License
+
+Ainda por definir pelo autor (a `ft8_lib` em `components/` é MIT). / To be chosen by the author (`components/ft8_lib` is MIT).
