@@ -361,8 +361,10 @@ static int format_json(bool with_rows, char *json, size_t cap)
                   ui_load() * 100.0f, (unsigned)(esp_get_free_heap_size() / 1024),
                   wifi_rssi(), ip_str, ap_active ? "true" : "false");
     n += json_str(json + n, cap - n, g_settings.wifi_ssid);
-    n += snprintf(json + n, cap - n, ",\"source\":\"%s\",\"boot\":",
-                  AUDIO_SOURCE == AUDIO_SRC_ADC ? "ADC interno" : "PCM1808");
+    n += snprintf(json + n, cap - n, ",\"source\":\"%s\",\"mon\":%s,\"vol\":%d,\"boot\":",
+                  AUDIO_SOURCE == AUDIO_SRC_ADC ? "ADC interno" :
+                  AUDIO_SOURCE == AUDIO_SRC_ES8311 ? "ES8311" : "PCM1808",
+                  AUDIO_MONITOR ? "true" : "false", g_settings.monitor_volume);
     n += json_str(json + n, cap - n, ui_boot_reason());
     n += snprintf(json + n, cap - n,
                   ",\"fax_lpm\":%d,\"fax_ioc\":%d,\"fax_auto\":%s,\"fax_state\":%d,\"fax_lines\":%d",
@@ -743,6 +745,11 @@ static esp_err_t handle_config(httpd_req_t *req)
         const int p = atoi(v);
         if (p >= 0 && p <= 2)
             g_settings.rtty_polarity = p;
+    }
+    if (form_value(body, "volume", v, sizeof(v))) {
+        const int vol = atoi(v);
+        if (vol >= 0 && vol <= 100)
+            g_settings.monitor_volume = vol;
     }
     if (form_value(body, "fax_lpm", v, sizeof(v))) {
         const int l = atoi(v);

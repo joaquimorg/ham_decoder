@@ -26,6 +26,7 @@
 #include "lvgl.h"
 
 #include "analyzer.h"
+#include "board_i2c.h"
 #include "fax_decoder.h"
 #include "ftx_decoder.h"
 #include "settings.h"
@@ -89,15 +90,20 @@ LV_FONT_DECLARE(font_ui_16)
     X(S_IMG_LINES,      "linhas", "lines") \
     X(S_IMG_RECEIVING,  "(a receber)", "(receiving)") \
     X(S_IMG_REAL,       "1:1", "1:1")     X(S_IMG_FIT,        "Ajustar", "Fit")     X(S_IMG_STOP,       "Parar", "Stop")     X(S_CLEAR,          "Limpar", "Clear") \
-    X(S_CFG_CW_AUTO,    "CW: tom automático", "CW: automatic tone") \
-    X(S_CFG_CONTRAST,   "CW: contraste mínimo", "CW: minimum contrast") \
-    X(S_CFG_RTTY_BAUD,  "RTTY: velocidade", "RTTY: speed") \
-    X(S_CFG_RTTY_POL,   "RTTY: polaridade", "RTTY: polarity") \
+    X(S_CFG_CW_AUTO,    "Tom automático", "Automatic tone") \
+    X(S_CFG_CONTRAST,   "Contraste mínimo", "Minimum contrast") \
+    X(S_CFG_RTTY_BAUD,  "Velocidade", "Speed") \
+    X(S_CFG_RTTY_POL,   "Polaridade", "Polarity") \
     X(S_RTTY_POLS,      "Automática\nNormal\nInvertida", "Automatic\nNormal\nReversed") \
-    X(S_CFG_FAX_LPM,    "FAX: linhas/min", "FAX: lines/min") \
-    X(S_CFG_FAX_AUTO,   "FAX: início automático", "FAX: automatic start") \
-    X(S_CFG_SSTV_ADJ,   "SSTV: ajuste automático", "SSTV: automatic adjust") \
+    X(S_CFG_FAX_LPM,    "Linhas/min", "Lines/min") \
+    X(S_CFG_FAX_AUTO,   "Início automático", "Automatic start") \
+    X(S_CFG_SSTV_ADJ,   "Ajuste automático", "Automatic adjust") \
+    X(S_SEC_GENERAL,    "Geral", "General") \
+    X(S_SEC_AUDIO,      "Áudio", "Audio") \
+    X(S_SEC_NETWORK,    "Rede e sistema", "Network and system") \
+    X(S_SEC_STATUS,     "Estado", "Status") \
     X(S_CFG_BRIGHT,     "Brilho", "Brightness") \
+    X(S_CFG_VOLUME,     "Volume do monitor", "Monitor volume") \
     X(S_CFG_WEB,        "Wi-Fi e página web", "Wi-Fi and web page") \
     X(S_CFG_WEB_NOTE,   "reinicia para aplicar", "restart to apply") \
     X(S_CFG_RESTART,    "Reiniciar a placa", "Restart the board") \
@@ -268,14 +274,7 @@ static void panel_init(esp_lcd_panel_io_handle_t *io, esp_lcd_panel_handle_t *pa
 
 static void touch_init()
 {
-    i2c_master_bus_config_t bus = {};
-    bus.i2c_port = I2C_NUM_0;
-    bus.sda_io_num = (gpio_num_t)BOARD_I2C_SDA;
-    bus.scl_io_num = (gpio_num_t)BOARD_I2C_SCL;
-    bus.clk_source = I2C_CLK_SRC_DEFAULT;
-    bus.glitch_ignore_cnt = 7;
-    bus.flags.enable_internal_pullup = true;    // external 10 k are fitted too
-    ESP_ERROR_CHECK(i2c_new_master_bus(&bus, &i2c_bus));
+    i2c_bus = board_i2c_bus();    // shared with the ES8311 codec
 
     gpio_config_t io = {};
     io.pin_bit_mask = 1ULL << TOUCH_PIN_RST;
@@ -336,7 +335,7 @@ static lv_obj_t *lbl_cw_line, *lbl_rtty_line;
 static lv_obj_t *ta_cw, *ta_rtty;
 static lv_obj_t *ftx_table, *lbl_ftx_state;
 static lv_obj_t *lbl_img_info;
-static lv_obj_t *lbl_cfg_info, *lbl_contrast, *lbl_bright, *lbl_web_note;
+static lv_obj_t *lbl_cfg_info, *lbl_contrast, *lbl_bright, *lbl_volume, *lbl_web_note;
 
 static uint16_t wf_lut[256];
 static UiStatus last_status;
@@ -743,7 +742,7 @@ static void img_stop_event(lv_event_t *)
 
 enum CfgId {
     CFG_CW_AUTO, CFG_CONTRAST, CFG_RTTY_BAUD, CFG_RTTY_POL, CFG_FAX_LPM, CFG_FAX_IOC,
-    CFG_FAX_AUTO, CFG_SSTV_ADJ, CFG_FTX_MODE, CFG_BRIGHT, CFG_WEB, CFG_LANGUAGE,
+    CFG_FAX_AUTO, CFG_SSTV_ADJ, CFG_FTX_MODE, CFG_BRIGHT, CFG_WEB, CFG_LANGUAGE, CFG_VOLUME,
 };
 
 static void rebuild_ui(void *);
@@ -781,6 +780,11 @@ static void cfg_event(lv_event_t *e)
         backlight_set(g_settings.lcd_brightness);
         save = code == LV_EVENT_RELEASED;
         break;
+    case CFG_VOLUME:
+        g_settings.monitor_volume = lv_slider_get_value(obj);
+        lv_label_set_text_fmt(lbl_volume, "%d %%", g_settings.monitor_volume);
+        save = code == LV_EVENT_RELEASED;
+        break;
     case CFG_WEB:
         g_settings.web_enabled = checked;
         lv_label_set_text(lbl_web_note, tr(S_CFG_WEB_NOTE));
@@ -798,6 +802,26 @@ static void cfg_event(lv_event_t *e)
 static void restart_event(lv_event_t *)
 {
     esp_restart();
+}
+
+// Heading that starts a group of settings: accent-coloured title over a rule.
+static void cfg_section(lv_obj_t *parent, const char *text, bool first = false)
+{
+    lv_obj_t *box = lv_obj_create(parent);
+    lv_obj_set_size(box, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_top(box, first ? 2 : 14, 0);
+    lv_obj_set_style_pad_bottom(box, 2, 0);
+    lv_obj_set_style_pad_left(box, 4, 0);
+    lv_obj_set_style_pad_right(box, 4, 0);
+    lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(box, 1, 0);
+    lv_obj_set_style_border_side(box, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_color(box, lv_color_hex(0x3a4a6e), 0);
+    lv_obj_set_scrollable(box, false);
+    lv_obj_t *l = lv_label_create(box);
+    lv_label_set_text(l, text);
+    lv_obj_set_style_text_font(l, &font_ui_16, 0);
+    lv_obj_set_style_text_color(l, lv_color_hex(0x6ab0ff), 0);
 }
 
 static lv_obj_t *cfg_row(lv_obj_t *parent, const char *text)
@@ -1072,23 +1096,34 @@ static void build_settings(lv_obj_t *tab)
     lv_obj_set_flex_flow(tab, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(tab, 0, 0);
 
+    cfg_section(tab, tr(S_SEC_GENERAL), true);
     cfg_dropdown(tab, LV_SYMBOL_LIST "  Idioma / Language", "Português\nEnglish",
                  g_settings.language == LANG_EN ? 1 : 0, CFG_LANGUAGE);
+    cfg_slider(tab, tr(S_CFG_BRIGHT), 5, 100, g_settings.lcd_brightness, CFG_BRIGHT, &lbl_bright);
+    lv_label_set_text_fmt(lbl_bright, "%d %%", g_settings.lcd_brightness);
+#if AUDIO_MONITOR
+    cfg_section(tab, tr(S_SEC_AUDIO));
+    cfg_slider(tab, tr(S_CFG_VOLUME), 0, 100, g_settings.monitor_volume, CFG_VOLUME, &lbl_volume);
+    lv_label_set_text_fmt(lbl_volume, "%d %%", g_settings.monitor_volume);
+#endif
+    cfg_section(tab, "CW");
     sw_cw_auto = cfg_switch(tab, tr(S_CFG_CW_AUTO), g_settings.cw_auto_tone, CFG_CW_AUTO);
     cfg_slider(tab, tr(S_CFG_CONTRAST), 15, 200, (int)(g_settings.cw_min_contrast * 10), CFG_CONTRAST,
                &lbl_contrast);
     lv_label_set_text_fmt(lbl_contrast, "%.1f", g_settings.cw_min_contrast);
+    cfg_section(tab, "RTTY");
     cfg_dropdown(tab, tr(S_CFG_RTTY_BAUD), "45,45 baud\n50 baud\n75 baud\n100 baud",
                  index_of_float(RTTY_BAUDS, 4, g_settings.rtty_baud), CFG_RTTY_BAUD);
     cfg_dropdown(tab, tr(S_CFG_RTTY_POL), tr(S_RTTY_POLS), g_settings.rtty_polarity, CFG_RTTY_POL);
+    cfg_section(tab, "FAX");
     cfg_dropdown(tab, tr(S_CFG_FAX_LPM), "60\n90\n120\n240",
                  index_of_int(FAX_LPMS, 4, g_settings.fax_lpm), CFG_FAX_LPM);
-    cfg_dropdown(tab, "FAX: IOC", "576\n288", index_of_int(FAX_IOCS, 2, g_settings.fax_ioc), CFG_FAX_IOC);
+    cfg_dropdown(tab, "IOC", "576\n288", index_of_int(FAX_IOCS, 2, g_settings.fax_ioc), CFG_FAX_IOC);
     cfg_switch(tab, tr(S_CFG_FAX_AUTO), g_settings.fax_auto, CFG_FAX_AUTO);
+    cfg_section(tab, "SSTV");
     cfg_switch(tab, tr(S_CFG_SSTV_ADJ), g_settings.sstv_adjust, CFG_SSTV_ADJ);
-    cfg_slider(tab, tr(S_CFG_BRIGHT), 5, 100, g_settings.lcd_brightness, CFG_BRIGHT, &lbl_bright);
-    lv_label_set_text_fmt(lbl_bright, "%d %%", g_settings.lcd_brightness);
 #if WEB_UI
+    cfg_section(tab, tr(S_SEC_NETWORK));
     lv_obj_t *sw = cfg_switch(tab, tr(S_CFG_WEB), g_settings.web_enabled, CFG_WEB);
     lbl_web_note = lv_label_create(lv_obj_get_parent(sw));
     lv_label_set_text(lbl_web_note, "");
@@ -1102,6 +1137,7 @@ static void build_settings(lv_obj_t *tab)
     lv_label_set_text_fmt(lv_label_create(btn), LV_SYMBOL_REFRESH " %s", tr(S_RESTART));
     lv_obj_add_event_cb(btn, restart_event, LV_EVENT_CLICKED, nullptr);
 #endif
+    cfg_section(tab, tr(S_SEC_STATUS));
     lbl_cfg_info = lv_label_create(tab);
     lv_obj_set_width(lbl_cfg_info, lv_pct(100));
     lv_obj_set_style_text_font(lbl_cfg_info, &font_ui_12, 0);

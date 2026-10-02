@@ -7,6 +7,7 @@
 #include "esp_log.h"
 
 #include "config.h"
+#include "audio_monitor.h"
 #include "cw_decoder.h"
 #include "fax_decoder.h"
 #include "sstv_decoder.h"
@@ -43,6 +44,7 @@ static void set_defaults()
     g_settings.sstv_adjust = false;
     g_settings.web_enabled = true;
     g_settings.lcd_brightness = 80;
+    g_settings.monitor_volume = MONITOR_DEFAULT_VOL;
     g_settings.language = LANG_PT;
     strlcpy(g_settings.wifi_ssid, WIFI_SSID, sizeof(g_settings.wifi_ssid));
     strlcpy(g_settings.wifi_pass, WIFI_PASS, sizeof(g_settings.wifi_pass));
@@ -90,6 +92,8 @@ void settings_init()
         g_settings.web_enabled = u8 != 0;
     if (nvs_get_u8(h, "lcd_bl", &u8) == ESP_OK && u8 >= 5 && u8 <= 100)
         g_settings.lcd_brightness = u8;
+    if (nvs_get_u8(h, "mon_vol", &u8) == ESP_OK && u8 <= 100)
+        g_settings.monitor_volume = u8;
     if (nvs_get_u8(h, "lang", &u8) == ESP_OK && u8 <= LANG_EN)
         g_settings.language = u8;
     len = sizeof(g_settings.wifi_ssid);
@@ -139,6 +143,7 @@ void settings_save()
     nvs_set_u8(h, "sstv_adj", g_settings.sstv_adjust ? 1 : 0);
     nvs_set_u8(h, "web_on", g_settings.web_enabled ? 1 : 0);
     nvs_set_u8(h, "lcd_bl", (uint8_t)g_settings.lcd_brightness);
+    nvs_set_u8(h, "mon_vol", (uint8_t)g_settings.monitor_volume);
     nvs_set_u8(h, "lang", (uint8_t)g_settings.language);
     nvs_set_str(h, "ssid", g_settings.wifi_ssid);
     nvs_set_str(h, "pass", g_settings.wifi_pass);
@@ -154,4 +159,5 @@ void settings_apply()
     fax_set_auto(g_settings.fax_auto);
     sstv_set_auto_adjust(g_settings.sstv_adjust);
     ftx_core_set_protocol((FtxProtocol)g_settings.ftx_mode);
+    audio_monitor_set_volume(g_settings.monitor_volume);
 }

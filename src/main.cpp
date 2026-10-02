@@ -11,7 +11,9 @@
 
 #include "config.h"
 #include "analyzer.h"
+#include "audio_monitor.h"
 #include "audio_source.h"
+#include "board_i2c.h"
 #include "settings.h"
 #include "ui_hub.h"
 #include "web_ui.h"
@@ -47,6 +49,7 @@ static void audio_task(void *arg)
 
     while (true) {
         const size_t n = audio_source_read(samples, AUDIO_BLOCK_SAMPLES);
+        audio_monitor_write(samples, n);
 
         for (size_t i = 0; i < n; i++) {
             int32_t x = samples[i];
@@ -135,6 +138,8 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, " RX Analyzer - V0.2");
 #if AUDIO_SOURCE == AUDIO_SRC_PCM1808
     ESP_LOGI(TAG, " " BOARD_NAME " + PCM1808");
+#elif AUDIO_SOURCE == AUDIO_SRC_ES8311
+    ESP_LOGI(TAG, " " BOARD_NAME " + ES8311");
 #else
     ESP_LOGI(TAG, " " BOARD_NAME " + ADC interno");
 #endif
@@ -157,7 +162,11 @@ extern "C" void app_main(void)
     for (int i = 1; i < DSP_NUM_BUFFERS; i++)
         xQueueSend(free_queue, &i, 0);
 
+#if defined(BOARD_FNK0104S)
+    board_i2c_bus();    // touch and ES8311 share it
+#endif
     audio_source_init();
+    audio_monitor_init();
 
     // Audio and analysis on core 1; Wi-Fi and the web server stay on core 0.
     xTaskCreatePinnedToCore(analysis_task, "analysis_task", 6144, nullptr, 4, nullptr, 1);

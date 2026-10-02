@@ -14,8 +14,8 @@ Documentação da Freenove: <https://github.com/Freenove/Freenove_ESP32_S3_Displ
 | LCD ST7796 (SPI) | SCK 12, MOSI 11, MISO 13, CS 10, DC 46 | 80 MHz; inversão de cores ligada; ordem BGR; o RESET do LCD está ligado ao EN do chip (só reset por software) |
 | Retroiluminação | 45 | ativa alta (BSS138); PWM a 24 kHz |
 | Touch FT6336U (I2C 0x38) | SDA 16, SCL 15, INT 17, RST 18 | mesmo barramento I2C do ES8311 |
-| Codec ES8311 (I2C 0x18) | MCLK 4, BCLK 5, LRCK 7, dados do ADC → ESP **6**, ESP → DAC **8** | ainda não usado |
-| Amplificador SC8002B | 1 (AUDIO_EN) | **ativo baixo**; o pull-up de 10 kΩ mantém-no desligado |
+| Codec ES8311 (I2C 0x18) | MCLK 4, BCLK 5, LRCK 7, dados do ADC → ESP **6**, ESP → DAC **8** | entrada de áudio (opcional) e monitor |
+| Amplificador SC8002B | 1 (AUDIO_EN) | **ativo baixo**; o pull-up de 10 kΩ mantém-no desligado; o monitor liga-o |
 | Microfone MEMS | MIC1P do ES8311 | através de L3 (0 Ω) e C37 |
 | Cartão SD (SDMMC 4 bits) | CLK 38, CMD 40, D0 39, D1 41, D2 48, D3 47 | ainda não usado |
 | LED RGB WS2812 | 42 | ainda não usado |
@@ -27,18 +27,31 @@ GPIO45 e GPIO46 são pinos de strapping, mas a placa já os usa (retroiluminaç�
 
 **Memória interna:** com o LCD, o Wi-Fi e o servidor web a RAM interna esgotava-se: a tarefa do servidor não arrancava e a placa entrava num ciclo de reinícios. Agora ficam na PSRAM o heap do LVGL (`lv_malloc_core` em `lcd_ui.cpp`) e os buffers do Wi-Fi/LWIP (`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`). Na RAM interna ficam os dois buffers DMA de 20 linhas do LCD.
 
-### Próximo passo: áudio pelo ES8311
+### Áudio pelo ES8311 e monitor no altifalante
 
 O codec tem ADC de 24 bits e PGA de 0 a 42 dB, com alimentação e massa analógicas próprias. Deve sofrer muito menos com o Wi-Fi do que o ADC interno.
 
-Para o usar com o rádio é preciso mexer na placa:
+**Escolha da entrada, no build** (ambiente do `platformio.ini`):
 
-1. Tirar o **L3 (0 Ω)** para desligar o microfone.
-2. Injetar o áudio no pad do lado do **C37**, com um atenuador. O nível máximo de entrada ainda está por confirmar.
+| Ambiente | Entrada de áudio |
+|---|---|
+| `freenove-fnk0104s` | ADC interno (GPIO2) |
+| `freenove-fnk0104s-es8311` | ES8311, entrada MIC1P (`-DRX_AUDIO=ES8311`) |
+| `esp32-s3-devkitc-1` | ADC interno (GPIO1) |
 
-No firmware, falta um `es8311_source.cpp` com a mesma interface `audio_source_*`. Pode partir da base I2S do `pcm1808_source.cpp` e configurar o codec por I2C.
+`-DRX_AUDIO=ADC|PCM1808|ES8311` vai nos `board_build.cmake_extra_args` (o `src/CMakeLists.txt` converte-o em `RX_AUDIO_*` para o `config.h`). Sem ele, a fonte é o ADC interno.
 
-A fonte de áudio escolhe-se em `include/config.h` com `AUDIO_SOURCE`: `AUDIO_SRC_ADC` (por omissão) ou `AUDIO_SRC_PCM1808`.
+**Alterações na placa para a entrada ES8311:**
+
+1. Tirar o **L3 (0 Ω)** para desligar o microfone MEMS.
+2. Injetar o áudio no pad do lado do **C37** (bloqueio DC já existente), através de um atenuador (divisor com trimmer de 10 kΩ). A entrada é single-ended na MIC1P.
+3. O ganho regula-se em `ES8311_MIC_PGA` (0..10, passos de 3 dB) e `ES8311_ADC_SCALE` (0..7, passos de 6 dB) no `config.h`. Começar com 0 e subir até o sinal mais forte não saturar (o pico aparece no ecrã/página).
+
+**Monitor (altifalante):** em todas as builds da FNK0104S (com qualquer entrada) o áudio recebido sai pelo DAC do ES8311 e pelo amplificador SC8002B (GPIO1, ativo baixo). O volume (0..100 %) regula-se no separador de definições do LCD e na página web (pílula «Monitor» no cabeçalho), e fica guardado na NVS. Volume 0 silencia o DAC e desliga o amplificador. Para o tirar: `-DRX_NO_MONITOR=1`. Não precisa de alterações na placa.
+
+**Firmware:** `src/es8311.cpp` (I2S duplex + registos do codec por I2C, bus partilhado com o touch em `board_i2c.cpp`), `src/es8311_source.cpp` (entrada) e `src/audio_monitor.cpp` (fila + saída I2S; com o ADC interno o relógio do DAC é outro, por isso a fila descarta amostras em vez de bloquear a captura).
+
+A fonte de áudio pode ainda escolher-se por omissão em `include/config.h` (`AUDIO_SRC_ADC`, `AUDIO_SRC_PCM1808` ou `AUDIO_SRC_ES8311`).
 
 ## Entrada de áudio: ADC interno (atual)
 

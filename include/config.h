@@ -19,12 +19,51 @@
 
 // Audio source. The internal ADC decodes 30 WPM CW without errors; both
 // PCM1808 modules tested corrupt the top bits of the samples (see docs/HARDWARE.md).
+// Chosen at build time: the PlatformIO env passes -DRX_AUDIO=ADC|PCM1808|ES8311
+// to CMake (src/CMakeLists.txt turns it into RX_AUDIO_*); none = the line below.
 #define AUDIO_SRC_PCM1808   0
 #define AUDIO_SRC_ADC       1
+#define AUDIO_SRC_ES8311    2       // FNK0104S: line input on the codec's MIC1P (L3 removed)
+#if defined(RX_AUDIO_ES8311)
+#define AUDIO_SOURCE        AUDIO_SRC_ES8311
+#elif defined(RX_AUDIO_PCM1808)
+#define AUDIO_SOURCE        AUDIO_SRC_PCM1808
+#elif defined(RX_AUDIO_ADC)
 #define AUDIO_SOURCE        AUDIO_SRC_ADC
+#else
+#define AUDIO_SOURCE        AUDIO_SRC_ADC
+#endif
 #if defined(BOARD_FNK0104S) && AUDIO_SOURCE == AUDIO_SRC_PCM1808
 #error "FNK0104S: the I2S pins go to the on-board ES8311 codec"
 #endif
+#if !defined(BOARD_FNK0104S) && AUDIO_SOURCE == AUDIO_SRC_ES8311
+#error "ES8311 audio source: FNK0104S only"
+#endif
+
+// ES8311 codec (FNK0104S). The ESP32 is the I2S master (MCLK 256 fs, 32-bit
+// slots), the codec a slave. Same I2S for the input (ADC -> ESP) and the
+// monitor output (ESP -> DAC -> SC8002B -> speaker).
+#define ES8311_ADDR         0x18
+#define ES8311_MCLK_GPIO    4
+#define ES8311_BCK_GPIO     5
+#define ES8311_WS_GPIO      7
+#define ES8311_DIN_GPIO     6       // codec ADC -> ESP
+#define ES8311_DOUT_GPIO    8       // ESP -> codec DAC
+#define ES8311_PA_GPIO      1       // SC8002B enable, active low (pull-up = off)
+#define ES8311_CHANNEL      0       // slot read from the codec: 0 = left, 1 = right
+// Input gain: analog PGA 0..10 (3 dB steps) plus ADC scale 0..7 (6 dB steps).
+// Start low and raise it until the loudest signal stays below clipping.
+#define ES8311_MIC_PGA      0
+#define ES8311_ADC_SCALE    0
+
+// Monitor: the received audio (as the analyzer hears it) on the board's speaker,
+// with a volume setting (LCD and web page). Works with any audio source.
+#if defined(BOARD_FNK0104S) && !defined(RX_NO_MONITOR)
+#define AUDIO_MONITOR       1
+#else
+#define AUDIO_MONITOR       0
+#endif
+#define MONITOR_DEFAULT_VOL 40      // %, 0 = off (amplifier disabled)
 
 // PCM1808 over I2S: ESP32 master (MCLK 256 fs), PCM1808 slave
 // (MD0 = MD1 = FMT = GND). 22 ohm series resistors on all four lines at the

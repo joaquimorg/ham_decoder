@@ -125,6 +125,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     <span class="pill" id="up">-</span>
     <span class="pill" id="load">-</span>
     <span class="pill" id="boot">-</span>
+    <span class="pill" id="monBox" hidden>Monitor <input type="range" id="vol" min="0" max="100" step="1" style="width: 90px; vertical-align: middle"> <span id="volVal"></span></span>
   </div>
 </header>
 <main>
@@ -445,6 +446,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       ? `${d.rtty_mark.toFixed(0)}/${d.rtty_space.toFixed(0)}${d.rtty_on ? '' : ' (silêncio)'}` : '-';
     if (document.activeElement !== $('baud')) $('baud').value = String(+d.rtty_baud.toFixed(2));
     if (document.activeElement !== $('pol')) $('pol').value = String(d.rtty_pol);
+    $('monBox').hidden = !d.mon;
+    if (d.mon && document.activeElement !== $('vol')) { $('vol').value = d.vol; $('volVal').textContent = d.vol + ' %'; }
     if (document.activeElement !== $('faxLpm')) $('faxLpm').value = String(d.fax_lpm);
     if (document.activeElement !== $('faxIoc')) $('faxIoc').value = String(d.fax_ioc);
     $('faxAuto').checked = d.fax_auto;
@@ -856,6 +859,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     a.download = `${img.title.replace(/[^\w-]+/g, '_')}_${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '')}.png`;
     a.href = c.toDataURL('image/png'); a.click();
   };
+  $('vol').oninput = () => { $('volVal').textContent = $('vol').value + ' %'; };
+  $('vol').onchange = () => postConfig({ volume: $('vol').value });
   $('faxLpm').onchange = () => postConfig({ fax_lpm: $('faxLpm').value });
   $('faxIoc').onchange = () => postConfig({ fax_ioc: $('faxIoc').value });
   $('faxAuto').onchange = () => postConfig({ fax_auto: $('faxAuto').checked ? 1 : 0 });

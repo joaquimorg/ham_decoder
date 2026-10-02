@@ -18,6 +18,7 @@ struct Settings {
     bool sstv_adjust;           // redraw SSTV images with the auto adjust
     bool web_enabled;           // Wi-Fi + web page (WEB_UI builds only)
     int lcd_brightness;         // backlight, 5..100 %
+    int monitor_volume;         // speaker monitor, 0..100 % (AUDIO_MONITOR builds)
     int language;               // Language
     char wifi_ssid[33];
     char wifi_pass[65];

@@ -12,3 +12,11 @@ idf_component_register(SRCS ${app_sources}
 if(RX_BOARD)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE BOARD_${RX_BOARD})
 endif()
+# Audio input selected by platformio.ini (-DRX_AUDIO=ADC|PCM1808|ES8311); none = config.h.
+if(RX_AUDIO)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE RX_AUDIO_${RX_AUDIO})
+endif()
+# -DRX_NO_MONITOR=1: no monitor output on the speaker.
+if(RX_NO_MONITOR)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE RX_NO_MONITOR)
+endif()
