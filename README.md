@@ -17,7 +17,7 @@ Descodificador/analisador de sinais de rádio **autónomo**, baseado em ESP32-S3
 
 - **Espectro e waterfall** em tempo real, com deteção e classificação automática do sinal (ruído, tom, CW, RTTY/FSK, PSK31, voz), por heurística e por um modelo **TinyML** (MLP int8) a correr na própria placa.
 - **CW (Morse)** e **RTTY** (Baudot, 45,45 / 50 / 75 baud), com estimativa de WPM, AFC e polaridade automática.
-- **FAX meteorológico (WEFAX)** e **SSTV** (Martin, Scottie, Robot, PD), com imagens apresentadas ao vivo.
+- **FAX meteorológico (WEFAX)** e **SSTV** (Martin, Scottie, Robot, PD), com imagens apresentadas ao vivo. O FAX tem squelch, filtro de mediana, seguimento do período da linha e resincronização em saltos do sinal.
 - **FT8 / FT4**, com a biblioteca [ft8_lib](components/ft8_lib/README.md) (MIT).
 - **Ecrã LCD com touch** de 4" (interface em português e inglês) e, opcionalmente, uma **página web** por Wi-Fi com os mesmos dados.
 
@@ -28,7 +28,7 @@ Descodificador/analisador de sinais de rádio **autónomo**, baseado em ESP32-S3
 | **Freenove FNK0104S** (placa principal) | ESP32-S3R8 (8 MB PSRAM), 16 MB flash, LCD 4" 480×320 (ST7796) com touch capacitivo (FT6336U), codec ES8311, cartão SD, bateria, USB-C. [Esquema](docs/4.0inch_ESP32-S3_Display_Schematic.pdf) |
 | **ESP32-S3 DevKitC-1 N16R8** (alternativa) | Sem LCD; usa-se só a página web. |
 
-A entrada de áudio usa o **ADC interno** do ESP32-S3 (GPIO2 na Freenove, header P3 pino 1; GPIO1 na DevKitC), com um circuito simples de polarização:
+Por omissão, a entrada de áudio usa o **ADC interno** do ESP32-S3 (GPIO2 na Freenove, header P3 pino 1; GPIO1 na DevKitC), com um circuito simples de polarização. Na Freenove também se pode usar o **codec ES8311** como entrada (ambiente `freenove-fnk0104s-es8311`, exige alterações na placa), e o áudio recebido ouve-se sempre no **altifalante** da placa, com volume regulável:
 
 | Componente | Ligação |
 |---|---|
@@ -68,7 +68,7 @@ Na Freenove, o Wi-Fi configura-se no próprio ecrã: **⚙ → Redes Wi-Fi...**,
 
 ### Estado do projeto
 
-Em desenvolvimento. Validado com gravações e simuladores no PC e com alguns sinais reais; a validação completa com o rádio, a gravação em SD, a caixa e o codec ES8311 ainda estão por fazer.
+Em desenvolvimento. Validado com gravações e simuladores no PC e com alguns sinais reais; a validação completa com o rádio, a gravação em SD e a caixa ainda estão por fazer. A entrada pelo ES8311 e o monitor no altifalante estão implementados, mas por validar com o rádio.
 
 ### Documentação
 
@@ -86,7 +86,7 @@ A **standalone** radio signal decoder/analyzer built on the ESP32-S3. It connect
 
 - Real-time **spectrum and waterfall**, with automatic signal detection and classification (noise, tone, CW, RTTY/FSK, PSK31, voice), using both heuristics and an on-device **TinyML** model (int8 MLP).
 - **CW (Morse)** and **RTTY** (Baudot, 45.45 / 50 / 75 baud), with WPM estimation, AFC and automatic polarity.
-- **Weather FAX (WEFAX)** and **SSTV** (Martin, Scottie, Robot, PD), with live image display.
+- **Weather FAX (WEFAX)** and **SSTV** (Martin, Scottie, Robot, PD), with live image display. FAX has squelch, noise median filtering, line-length tracking and resync after signal jumps.
 - **FT8 / FT4**, using the [ft8_lib](components/ft8_lib/README.md) library (MIT).
 - **4" touch LCD** (Portuguese and English UI) and, optionally, a **web page** over Wi-Fi showing the same data.
 
@@ -97,7 +97,7 @@ A **standalone** radio signal decoder/analyzer built on the ESP32-S3. It connect
 | **Freenove FNK0104S** (main board) | ESP32-S3R8 (8 MB PSRAM), 16 MB flash, 4" 480×320 LCD (ST7796) with capacitive touch (FT6336U), ES8311 codec, SD card, battery, USB-C. [Schematic](docs/4.0inch_ESP32-S3_Display_Schematic.pdf) |
 | **ESP32-S3 DevKitC-1 N16R8** (alternative) | No LCD; web page only. |
 
-Audio input uses the ESP32-S3 **internal ADC** (GPIO2 on the Freenove, header P3 pin 1; GPIO1 on the DevKitC) with a simple biasing network:
+By default, audio input uses the ESP32-S3 **internal ADC** (GPIO2 on the Freenove, header P3 pin 1; GPIO1 on the DevKitC) with a simple biasing network. On the Freenove the **ES8311 codec** can be used as the input instead (`freenove-fnk0104s-es8311` environment, needs board modifications), and the received audio can always be heard on the board's **speaker** with an adjustable volume:
 
 | Part | Connection |
 |---|---|
@@ -137,7 +137,7 @@ On the Freenove, Wi-Fi is set up on the board itself: **⚙ → Wi-Fi networks..
 
 ### Status
 
-Work in progress. Validated with recordings and PC simulators and some real signals; full on-air validation, SD recording, enclosure and the ES8311 codec are still to do.
+Work in progress. Validated with recordings and PC simulators and some real signals; full on-air validation, SD recording and the enclosure are still to do. ES8311 input and the speaker monitor are implemented but not yet validated with a radio.
 
 ### Documentation
 

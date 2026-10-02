@@ -18,7 +18,7 @@ Criar um equipamento baseado em ESP32-S3 capaz de:
 
 - **Freenove FNK0104S** (placa final): ESP32-S3R8 (8 MB PSRAM octal), 16 MB de flash, LCD de 4" 480×320 (ST7796) com touch capacitivo (FT6336U), codec ES8311, cartão SD, bateria e USB-C. Esquema em [docs/4.0inch_ESP32-S3_Display_Schematic.pdf](docs/4.0inch_ESP32-S3_Display_Schematic.pdf).
 - em alternativa, **ESP32-S3 DevKitC-1 N16R8** (sem LCD, só a página web)
-- entrada de áudio: **ADC interno do ESP32-S3**. Na Freenove, o codec ES8311 (I2S) fica para uma fase seguinte; ver [docs/HARDWARE.md](docs/HARDWARE.md)
+- entrada de áudio: **ADC interno do ESP32-S3** (por omissão) ou, na Freenove, o **codec ES8311** por I2S (`-DRX_AUDIO=ES8311`, ambiente `freenove-fnk0104s-es8311`); o áudio ouve-se no altifalante (monitor, com volume). Ver [docs/HARDWARE.md](docs/HARDWARE.md)
 - fonte de áudio de teste
 - USB para alimentação/programação
 
@@ -40,12 +40,12 @@ Máximo ~2,8 Vpp na entrada. Esquema, a ligação do PCM1808 e os GPIOs a evitar
 
 ## Firmware atual
 
-1. captura áudio a 48 kHz com o ADC1 interno (12 bits);
+1. captura áudio a 48 kHz com o ADC1 interno (12 bits) ou com o ES8311, e envia uma cópia para o altifalante (monitor);
 2. remove a polarização DC e decima para 12 kHz;
 3. calcula FFT, ruído de fundo e picos;
 4. classifica o sinal (ruído, tom, CW, FSK/RTTY, voz);
 5. descodifica CW (Morse) no tom detetado e RTTY (Baudot, 45,45/50/75 baud) nos dois tons FSK detetados;
-6. descodifica imagens **FAX** (WEFAX 60/90/120/240 lpm, IOC 576/288) e **SSTV** (Martin, Scottie, Robot, PD), e mensagens **FT8/FT4** (com a biblioteca [ft8_lib](components/ft8_lib/README.md));
+6. descodifica imagens **FAX** (WEFAX 60/90/120/240 lpm, IOC 576/288; com squelch, mediana, seguimento do período da linha e resincronização em saltos, parâmetros `FAX_*` em `config.h`) e **SSTV** (Martin, Scottie, Robot, PD), e mensagens **FT8/FT4** (com a biblioteca [ft8_lib](components/ft8_lib/README.md));
 7. escreve no monitor série o texto CW e as mudanças de sinal; com `SERIAL_REPORT 2` em `config.h`, escreve também a linha completa do waterfall em texto a cada segundo;
 8. classifica o sinal também com um modelo **TinyML** (rede MLP int8, ver abaixo);
 9. mostra tudo no **LCD com touch** da Freenove (ver abaixo);
@@ -65,10 +65,12 @@ Só na Freenove FNK0104S (`LCD_UI` em `config.h`). Ecrã em paisagem, com uma ba
 - **Imagem:** a imagem FAX/SSTV em curso, com os botões **FAX** (iniciar agora) e **Parar**.
   - O FAX ocupa a largura toda: as linhas mais recentes ficam em baixo e as antigas saem por cima. O SSTV aparece inteiro.
   - Tocar na imagem troca entre as duas vistas (largura toda / imagem inteira).
+  - O botão **1:1** mostra a imagem em tamanho real, com scroll por arrasto; **Ajustar** volta ao ajuste à largura.
 - **⚙ Definições:**
   - idioma (**Português / English**, muda logo);
   - CW, RTTY, FAX e SSTV (as mesmas da página web);
   - brilho;
+  - volume do monitor (altifalante);
   - Wi-Fi/página web ligada ou desligada, com o botão Reiniciar;
   - informação da placa.
 
@@ -130,7 +132,8 @@ Com um tom, o tom aparece no waterfall.
 - [x] ADC interno em contínuo
 - [ ] PCM1808 por I2S (módulos testados corrompem as amostras)
 - [x] RMS/peak
-- [ ] escolher o ADC definitivo (a seguir: o codec ES8311 da Freenove, por I2S)
+- [x] codec ES8311 da Freenove por I2S (entrada opcional) e monitor no altifalante
+- [ ] escolher a entrada definitiva (ADC interno ou ES8311) após testes com o rádio
 
 ### V0.2 - DSP
 - [x] buffer de áudio
@@ -199,6 +202,7 @@ Para juntar exemplos reais: `ML_LOG_FEATURES 1` e `ML_LOG_LABEL "CW"` em `config
 - [x] FAX: tons APT de início/fim, alinhamento pelas linhas de fase, 60/90/120/240 lpm, IOC 576/288
 - [x] SSTV: cabeçalho VIS, Martin M1/M2, Scottie S1/S2/DX, Robot 36/72, PD50/90/120/160/180/240, correção de inclinação pelos sincronismos
 - [x] FT8/FT4 com a ft8_lib (espectrograma na tarefa de análise, descodificação numa tarefa no core 0), hora por NTP
+- [x] FAX: squelch, mediana, seguimento do período da linha e resincronização em saltos
 - [x] validação no PC: `tools/fax_sim.py`, `tools/sstv_sim.py`, `tools/ftx_test/`
 - [ ] validar com sinais reais do rádio
 
@@ -226,6 +230,9 @@ rx_analyzer/
 ├── include/
 │   ├── config.h
 │   ├── audio_source.h
+│   ├── audio_monitor.h
+│   ├── es8311.h
+│   ├── board_i2c.h
 │   ├── analyzer.h
 │   ├── cw_decoder.h
 │   ├── rtty_decoder.h
@@ -246,6 +253,10 @@ rx_analyzer/
 │   ├── idf_component.yml (LVGL, esp_lvgl_port, esp_lcd_st7796)
 │   ├── main.cpp
 │   ├── pcm1808_source.cpp
+│   ├── es8311.cpp       (codec ES8311: I2S + I2C)
+│   ├── es8311_source.cpp (entrada de áudio pelo ES8311)
+│   ├── audio_monitor.cpp (monitor no altifalante)
+│   ├── board_i2c.cpp    (barramento I2C partilhado: touch + codec)
 │   ├── adc_source.cpp
 │   ├── analyzer.cpp
 │   ├── cw_decoder.cpp
