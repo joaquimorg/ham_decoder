@@ -33,6 +33,7 @@
 #include "settings.h"
 #include "sstv_decoder.h"
 #include "ui_hub.h"
+#include "hell_decoder.h"
 #include "web_ui.h"
 
 static const char *TAG = "LCD";
@@ -54,13 +55,13 @@ static const char *TAG = "LCD";
 #define TABBAR_H        36
 #define CONTENT_H       (LCD_V_RES - STATUS_H - TABBAR_H)    // 262
 #define SPEC_H          56
-#define WF_H            (CONTENT_H - SPEC_H)    // 206: the text lines go over its bottom
-#define RX_LINE_ROWS    4       // RX tab: text rows per channel (the newest at the bottom)
+#define RX_LINE_ROWS    4       // RX tab window: text rows (the newest at the bottom)
 #define RX_ROW_H        15      // font_ui_12 line height
 #define RX_HEAD_H       24      // mode name above the rows (with a gap before them)
-#define RX_LINE_H       (RX_HEAD_H + RX_LINE_ROWS * RX_ROW_H + 2)    // one channel's box: 86
-#define RX_LINES        1       // channels shown on the RX tab: only the last one to decode
-#define RX_LINE_HOLD_MS 120000  // a channel's lines stay this long after its last text
+#define RX_LINE_H       (RX_HEAD_H + RX_LINE_ROWS * RX_ROW_H + 2)    // the window: 86
+#define RX_IMG_W        (LCD_H_RES - 8)            // ... showing the image being received
+#define RX_IMG_H        (RX_LINE_H - RX_HEAD_H)
+#define WF_H            (CONTENT_H - SPEC_H - RX_LINE_H)    // 120, above the window
 #define TEXT_KEEP       500     // characters kept for the RX-tab view
 #define TEXT_TAB_LINES  25      // lines kept in the Text tab (as shown, after wrapping)
 #define TEXT_TAB_MSGS   10      // frames / messages kept in the Text tab (APRS, POCSAG)
@@ -339,9 +340,9 @@ static lv_obj_t *lbl_mode, *lbl_info;
 static lv_obj_t *spec_canvas, *wf_canvas, *img_canvas;
 static uint16_t *spec_buf, *wf_buf, *img_buf;
 // Text channels: one entry per decoder that produces text. The Text tab has a
-// sub-tab per channel; the RX tab shows, over the bottom of the waterfall, a
-// line for each of the (up to RX_LINES) channels that got text in the last
-// RX_LINE_HOLD_MS, the newest at the bottom - nothing when nothing decodes.
+// sub-tab per channel. The RX tab has a window under the waterfall that shows
+// the last channel to decode (or the image being received) and stays on it
+// until another one has something.
 struct TextChannelDef {
     UiTextChannel ch;
     const char *name;     // Text sub-tab and RX-tab heading
@@ -356,12 +357,36 @@ static const TextChannelDef TEXT_DEFS[] = {
 #if POCSAG_ENABLE
     { UI_TEXT_POCSAG, "POCSAG", 0xffb070, true },
 #endif
-    { UI_TEXT_TONES, "DTMF", 0xc0c0ff, true },    // DTMF sequences and CTCSS tones
+    { UI_TEXT_NAVTEX, "NAVTEX", 0xa0e0a0, false },
+    { UI_TEXT_TONES, "DTMF", 0xc0c0ff, true },    // DTMF sequences, CTCSS and DCS
 };
 constexpr int TEXT_CH = sizeof(TEXT_DEFS) / sizeof(TEXT_DEFS[0]);
-static lv_obj_t *lbl_line[TEXT_CH], *box_line[TEXT_CH], *ta_text[TEXT_CH];
-static uint32_t line_ms[TEXT_CH];       // lv_tick of the channel's last text, 0 = none
-static lv_obj_t *text_btn[TEXT_CH], *text_btn_lbl[TEXT_CH];
+static lv_obj_t *ta_text[TEXT_CH];
+// RX window: a header chip, the text rows and a canvas for images.
+constexpr int RX_SHOW_IMAGE = -2;
+static lv_obj_t *rx_head, *rx_rows, *rx_text, *rx_img;
+static uint16_t *rx_img_buf;
+static int rx_cur = -1;                 // channel shown, RX_SHOW_IMAGE, -1 = nothing yet
+static uint32_t rx_img_id = 0, rx_img_next = 0;    // image shown and its next line to draw
+// Sub-tabs: the text channels, then Feld-Hell (a canvas).
+constexpr int TEXT_SUBS = TEXT_CH + 1;
+constexpr int HELL_SUB = TEXT_CH;
+static lv_obj_t *text_btn[TEXT_SUBS], *text_btn_lbl[TEXT_SUBS];
+
+// Feld-Hell view: HELL_STRIPS strips filled left to right, each column drawn
+// twice (stacked) at HELL_SCALE; when the last strip is full they move up.
+#define HELL_SCALE      2
+#define HELL_STRIP_H    (2 * UI_HELL_ROWS * HELL_SCALE)     // 56
+#define HELL_GAP        6
+#define HELL_STRIPS     3
+#define HELL_PITCH      (HELL_STRIP_H + HELL_GAP)
+#define HELL_W          (LCD_H_RES - 8)
+#define HELL_H          (HELL_STRIPS * HELL_PITCH - HELL_GAP)
+#define HELL_COLS       (HELL_W / HELL_SCALE)
+static lv_obj_t *hell_canvas;
+static uint16_t *hell_buf;
+static uint32_t hell_seq = 0;
+static int hell_x = 0, hell_strip = 0;
 static int text_sel = 0;                // sub-tab shown
 static bool text_unread[TEXT_CH];       // new text in a sub-tab not shown
 static lv_obj_t *ftx_table, *lbl_ftx_state;
@@ -513,28 +538,95 @@ static TextView text_views[TEXT_CH];    // .ch set from TEXT_DEFS in build_ui()
 // Text sub-tab buttons: the shown one checked, a dot on those with new text.
 static void refresh_text_buttons()
 {
-    for (int i = 0; i < TEXT_CH; i++) {
+    for (int i = 0; i < TEXT_SUBS; i++) {
         if (!text_btn[i])
             continue;
         if (i == text_sel)
             lv_obj_add_state(text_btn[i], LV_STATE_CHECKED);
         else
             lv_obj_remove_state(text_btn[i], LV_STATE_CHECKED);
-        lv_label_set_text_fmt(text_btn_lbl[i], "%s%s", TEXT_DEFS[i].name, text_unread[i] ? " " LV_SYMBOL_BULLET : "");
+        if (i == HELL_SUB)
+            lv_label_set_text(text_btn_lbl[i], "HELL");
+        else
+            lv_label_set_text_fmt(text_btn_lbl[i], "%s%s", TEXT_DEFS[i].name,
+                                  text_unread[i] ? " " LV_SYMBOL_BULLET : "");
     }
 }
 
 static void select_text(int i)
 {
     text_sel = i;
-    text_unread[i] = false;
+    if (i < TEXT_CH)
+        text_unread[i] = false;
     for (int k = 0; k < TEXT_CH; k++) {
         if (k == i)
             lv_obj_remove_flag(ta_text[k], LV_OBJ_FLAG_HIDDEN);
         else
             lv_obj_add_flag(ta_text[k], LV_OBJ_FLAG_HIDDEN);
     }
+    if (hell_canvas) {
+        if (i == HELL_SUB)
+            lv_obj_remove_flag(hell_canvas, LV_OBJ_FLAG_HIDDEN);
+        else
+            lv_obj_add_flag(hell_canvas, LV_OBJ_FLAG_HIDDEN);
+    }
     refresh_text_buttons();
+}
+
+static void hell_clear()
+{
+    if (hell_buf)
+        memset(hell_buf, 0, HELL_W * HELL_H * sizeof(uint16_t));
+    hell_x = 0;
+    hell_strip = 0;
+    if (hell_canvas)
+        lv_obj_invalidate(hell_canvas);
+}
+
+// New Hell columns into the canvas; only the part drawn is redrawn.
+static void update_hell()
+{
+    if (!hell_canvas || !hell_buf)
+        return;
+    static uint8_t cols[32][UI_HELL_ROWS];
+    const int n = ui_get_hell(hell_seq, cols, 32, &hell_seq);
+    if (n <= 0)
+        return;
+    bool scrolled = false;
+    int x0 = hell_x, strip0 = hell_strip;
+    for (int c = 0; c < n; c++) {
+        if (hell_x >= HELL_COLS) {
+            hell_x = 0;
+            if (++hell_strip >= HELL_STRIPS) {
+                memmove(hell_buf, hell_buf + HELL_PITCH * HELL_W, (HELL_H - HELL_PITCH) * HELL_W * sizeof(uint16_t));
+                memset(hell_buf + (HELL_STRIPS - 1) * HELL_PITCH * HELL_W, 0,
+                       HELL_STRIP_H * HELL_W * sizeof(uint16_t));
+                hell_strip = HELL_STRIPS - 1;
+                scrolled = true;
+            }
+        }
+        for (int copy = 0; copy < 2; copy++) {
+            for (int r = 0; r < UI_HELL_ROWS; r++) {
+                const uint8_t v = cols[c][r];
+                const uint16_t px = rgb565(v * 3 / 4, v, v * 3 / 4);
+                const int y = hell_strip * HELL_PITCH + copy * UI_HELL_ROWS * HELL_SCALE +
+                              (UI_HELL_ROWS - 1 - r) * HELL_SCALE;    // bottom pixel first
+                for (int dy = 0; dy < HELL_SCALE; dy++)
+                    for (int dx = 0; dx < HELL_SCALE; dx++)
+                        hell_buf[(y + dy) * HELL_W + hell_x * HELL_SCALE + dx] = px;
+            }
+        }
+        hell_x++;
+    }
+    if (scrolled || hell_strip != strip0) {
+        lv_obj_invalidate(hell_canvas);
+        return;
+    }
+    lv_area_t a;
+    lv_obj_get_coords(hell_canvas, &a);
+    lv_area_t d = { (int32_t)(a.x1 + x0 * HELL_SCALE), (int32_t)(a.y1 + hell_strip * HELL_PITCH),
+                    (int32_t)(a.x1 + hell_x * HELL_SCALE - 1), (int32_t)(a.y1 + hell_strip * HELL_PITCH + HELL_STRIP_H - 1) };
+    lv_obj_invalidate_area(hell_canvas, &d);
 }
 
 static void text_btn_event(lv_event_t *e)
@@ -561,37 +653,71 @@ static void trim_lines(lv_obj_t *ta)
 }
 
 // RX tab second line: RTTY (1) or PSK (2), whichever got text last.
-static void layout_rx_lines()
+static void rx_set_head(const char *name, uint32_t color)
 {
-    int order[TEXT_CH], n = 0;
-    for (int i = 0; i < TEXT_CH; i++) {
-        if (line_ms[i] && lv_tick_elaps(line_ms[i]) < RX_LINE_HOLD_MS)
-            order[n++] = i;
-        else
-            line_ms[i] = 0;
-    }
-    for (int a = 1; a < n; a++) {    // newest first
-        const int v = order[a];
-        int b = a - 1;
-        while (b >= 0 && line_ms[order[b]] < line_ms[v]) {
-            order[b + 1] = order[b];
-            b--;
+    lv_label_set_text(rx_head, name);
+    lv_obj_set_style_bg_color(rx_head, lv_color_hex(color), 0);
+}
+
+// RX window on text channel ch (does nothing if it already is).
+static void rx_show_channel(int ch)
+{
+    if (rx_cur == ch || !rx_text)
+        return;
+    rx_cur = ch;
+    rx_set_head(TEXT_DEFS[ch].name, TEXT_DEFS[ch].color);
+    lv_obj_set_style_text_color(rx_text, lv_color_hex(TEXT_DEFS[ch].color), 0);
+    lv_label_set_text(rx_text, text_views[ch].tail);
+    lv_obj_add_flag(rx_img, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(rx_rows, LV_OBJ_FLAG_HIDDEN);
+}
+
+// RX window on the image being received: its newest lines, scaled to the
+// window width, scrolling up. Stays on the last image until text arrives.
+static void update_rx_image()
+{
+    if (!rx_img || !rx_img_buf)
+        return;
+    const UiImageInfo info = ui_get_image_info();
+    if (!info.id || info.width == 0)
+        return;
+    const bool switch_to = info.id != rx_img_id && (info.active || rx_cur == RX_SHOW_IMAGE);
+    if (switch_to) {
+        rx_img_id = info.id;
+        rx_img_next = info.lines > RX_IMG_H ? info.lines - RX_IMG_H : 0;
+        memset(rx_img_buf, 0, RX_IMG_W * RX_IMG_H * sizeof(uint16_t));
+        if (rx_cur != RX_SHOW_IMAGE) {
+            rx_cur = RX_SHOW_IMAGE;
+            lv_obj_add_flag(rx_rows, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(rx_img, LV_OBJ_FLAG_HIDDEN);
         }
-        order[b + 1] = v;
+        rx_set_head(info.title, 0xffd080);
     }
-    if (n > RX_LINES)
-        n = RX_LINES;
-    for (int i = 0; i < TEXT_CH; i++) {
-        if (box_line[i])
-            lv_obj_add_flag(box_line[i], LV_OBJ_FLAG_HIDDEN);
+    if (rx_cur != RX_SHOW_IMAGE || info.id != rx_img_id)
+        return;
+    if (rx_img_next < info.first)
+        rx_img_next = info.first;    // lines no longer held
+    if (info.lines > rx_img_next + RX_IMG_H)
+        rx_img_next = info.lines - RX_IMG_H;
+    if (rx_img_next >= info.lines)
+        return;
+    static uint8_t line[UI_IMG_MAX_LINE];
+    for (; rx_img_next < info.lines; rx_img_next++) {
+        if (!ui_get_image_lines(info.id, rx_img_next, 1, line))
+            return;
+        memmove(rx_img_buf, rx_img_buf + RX_IMG_W, (RX_IMG_H - 1) * RX_IMG_W * sizeof(uint16_t));
+        uint16_t *dst = rx_img_buf + (RX_IMG_H - 1) * RX_IMG_W;
+        for (int x = 0; x < RX_IMG_W; x++) {
+            const int sx = x * info.width / RX_IMG_W;
+            if (info.channels == 3) {
+                const uint8_t *p = line + sx * 3;
+                dst[x] = rgb565(p[0], p[1], p[2]);
+            } else {
+                dst[x] = rgb565(line[sx], line[sx], line[sx]);
+            }
+        }
     }
-    for (int k = 0; k < n; k++) {
-        lv_obj_t *box = box_line[order[k]];
-        if (!box)
-            continue;
-        lv_obj_set_y(box, CONTENT_H - (k + 1) * RX_LINE_H);    // the newest flush with the tab bar
-        lv_obj_remove_flag(box, LV_OBJ_FLAG_HIDDEN);
-    }
+    lv_obj_invalidate(rx_img);
 }
 
 // Message channels: keeps the last TEXT_TAB_MSGS frames / messages. A message
@@ -623,13 +749,12 @@ static void trim_messages(lv_obj_t *ta)
 static void update_text(int ch)
 {
     TextView &tv = text_views[ch];
-    lv_obj_t *line_lbl = lbl_line[ch], *ta = ta_text[ch];
+    lv_obj_t *ta = ta_text[ch];
     EXT_RAM_BSS_ATTR static char buf[UI_TEXT_RING + 1];
     const int n = ui_get_text(tv.ch, tv.seq, buf, &tv.seq);
     if (n <= 0)
         return;
-    line_ms[ch] = lv_tick_get() | 1;    // never 0
-    layout_rx_lines();
+    rx_show_channel(ch);    // the RX window follows the last channel to decode
     if (ch != text_sel && !text_unread[ch]) {
         text_unread[ch] = true;
         refresh_text_buttons();
@@ -674,7 +799,8 @@ static void update_text(int ch)
         tv.tail[tv.len++] = c;
     }
     tv.tail[tv.len] = 0;
-    lv_label_set_text(line_lbl, tv.tail);
+    if (rx_cur == ch)
+        lv_label_set_text(rx_text, tv.tail);
 }
 
 // ---------------------------------------------------------------------------
@@ -1358,7 +1484,8 @@ static void ui_timer(lv_timer_t *)
         update_status();
         for (int ch = 0; ch < TEXT_CH; ch++)
             update_text(ch);
-        layout_rx_lines();    // lines whose hold time ran out go away
+        update_hell();
+        update_rx_image();
         update_ftx();
     }
     const uint32_t tab = lv_tabview_get_tab_active(tabview);
@@ -1371,15 +1498,18 @@ static void ui_timer(lv_timer_t *)
 // Text tab "Clear": empties the shown channel's text area and its RX-tab line.
 static void clear_text_event(lv_event_t *)
 {
+    if (text_sel == HELL_SUB) {
+        hell_clear();
+        return;
+    }
     const int i = text_sel;
     TextView &tv = text_views[i];
     tv.len = 0;
     tv.tail[0] = 0;
     tv.mid_line = false;
     lv_textarea_set_text(ta_text[i], "");
-    lv_label_set_text(lbl_line[i], "");
-    line_ms[i] = 0;
-    layout_rx_lines();
+    if (rx_cur == i)
+        lv_label_set_text(rx_text, "");
 }
 
 // ---------------------------------------------------------------------------
@@ -1429,8 +1559,8 @@ static void build_ui()
     tab_cfg = lv_tabview_add_tab(tabview, LV_SYMBOL_SETTINGS);
     lv_obj_set_style_text_font(lv_tabview_get_tab_bar(tabview), &font_ui_16, 0);
 
-    // RX: spectrum, waterfall, and over its bottom the text of the channels
-    // decoding now (see layout_rx_lines).
+    // RX: spectrum, waterfall, and under it the window with the last channel
+    // to decode or the image being received.
     spec_canvas = make_canvas(tab_rx, &spec_buf, LCD_H_RES, SPEC_H);
     wf_canvas = make_canvas(tab_rx, &wf_buf, LCD_H_RES, WF_H);
     lv_obj_set_pos(wf_canvas, 0, SPEC_H);
@@ -1439,81 +1569,94 @@ static void build_ui()
         lv_obj_add_event_cb(c, spectrum_event, LV_EVENT_SHORT_CLICKED, nullptr);
         lv_obj_add_event_cb(c, spectrum_event, LV_EVENT_LONG_PRESSED, nullptr);
     }
-    for (int i = 0; i < TEXT_CH; i++) {
+    for (int i = 0; i < TEXT_CH; i++)
         text_views[i].ch = TEXT_DEFS[i].ch;
-        const lv_color_t color = lv_color_hex(TEXT_DEFS[i].color);
-        lv_obj_t *box = plain(lv_obj_create(tab_rx));
-        lv_obj_set_style_bg_color(box, lv_color_black(), 0);
-        lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);    // opaque: no blending over the waterfall
-        lv_obj_set_size(box, LCD_H_RES, RX_LINE_H);
-        lv_obj_remove_flag(box, LV_OBJ_FLAG_CLICKABLE);    // taps reach the waterfall
-        lv_obj_add_flag(box, LV_OBJ_FLAG_HIDDEN);
-        // Mode name on a chip in the channel's colour (there is no bold font),
-        // the text rows below it.
-        lv_obj_t *head = lv_label_create(box);
-        lv_label_set_text(head, TEXT_DEFS[i].name);
-        lv_obj_set_style_text_font(head, &font_ui_12, 0);
-        lv_obj_set_style_text_color(head, lv_color_black(), 0);
-        lv_obj_set_style_bg_color(head, color, 0);
-        lv_obj_set_style_bg_opa(head, LV_OPA_COVER, 0);
-        lv_obj_set_style_pad_hor(head, 5, 0);
-        lv_obj_set_style_radius(head, 3, 0);
-        lv_obj_set_pos(head, 4, 3);
-        lv_obj_t *rows = plain(lv_obj_create(box));
-        lv_obj_set_style_bg_opa(rows, LV_OPA_TRANSP, 0);
-        lv_obj_remove_flag(rows, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_pos(rows, 4, RX_HEAD_H);
-        lv_obj_set_size(rows, LCD_H_RES - 8, RX_LINE_ROWS * RX_ROW_H);
-        lv_obj_t *l = lv_label_create(rows);
-        lv_obj_set_style_text_font(l, &font_ui_12, 0);
-        lv_obj_set_style_text_color(l, color, 0);
-        lv_obj_set_width(l, lv_pct(100));
-        lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_WRAP);
-        lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-        lv_label_set_text(l, text_views[i].tail);
-        lbl_line[i] = l;
-        box_line[i] = box;
+    lv_obj_t *box = plain(lv_obj_create(tab_rx));
+    lv_obj_set_style_bg_color(box, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
+    lv_obj_set_pos(box, 0, SPEC_H + WF_H);
+    lv_obj_set_size(box, LCD_H_RES, RX_LINE_H);
+    lv_obj_remove_flag(box, LV_OBJ_FLAG_CLICKABLE);
+    // Mode name on a chip in the channel's colour (there is no bold font).
+    rx_head = lv_label_create(box);
+    lv_obj_set_style_text_font(rx_head, &font_ui_12, 0);
+    lv_obj_set_style_text_color(rx_head, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(rx_head, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_hor(rx_head, 5, 0);
+    lv_obj_set_style_radius(rx_head, 3, 0);
+    lv_obj_set_pos(rx_head, 4, 3);
+    rx_set_head("RX", 0x808080);
+    rx_rows = plain(lv_obj_create(box));
+    lv_obj_set_style_bg_opa(rx_rows, LV_OPA_TRANSP, 0);
+    lv_obj_remove_flag(rx_rows, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_pos(rx_rows, 4, RX_HEAD_H);
+    lv_obj_set_size(rx_rows, LCD_H_RES - 8, RX_LINE_ROWS * RX_ROW_H);
+    rx_text = lv_label_create(rx_rows);
+    lv_obj_set_style_text_font(rx_text, &font_ui_12, 0);
+    lv_obj_set_width(rx_text, lv_pct(100));
+    lv_label_set_long_mode(rx_text, LV_LABEL_LONG_MODE_WRAP);
+    lv_obj_align(rx_text, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_label_set_text(rx_text, "");
+    rx_img = make_canvas(box, &rx_img_buf, RX_IMG_W, RX_IMG_H);
+    lv_obj_set_pos(rx_img, 4, RX_HEAD_H);
+    lv_obj_add_flag(rx_img, LV_OBJ_FLAG_HIDDEN);
+    // After a rebuild (language change): back on what was shown.
+    {
+        const int cur = rx_cur;
+        rx_cur = -1;
+        rx_img_id = 0;
+        if (cur >= 0)
+            rx_show_channel(cur);
+        else if (cur == RX_SHOW_IMAGE)
+            rx_cur = RX_SHOW_IMAGE, update_rx_image();
     }
-    layout_rx_lines();
 
     // Text: a sub-tab per channel (buttons on top, a dot = new text) and one
     // clear button (trash icon) for the channel shown; its text below.
     lv_obj_set_flex_flow(tab_text, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(tab_text, 4, 0);
     lv_obj_set_style_pad_row(tab_text, 4, 0);
+    // Clear (trash) first, always in view; the sub-tab buttons after it in a
+    // row that scrolls sideways if it does not fit.
     lv_obj_t *tbar = plain(lv_obj_create(tab_text));
     lv_obj_set_style_bg_opa(tbar, LV_OPA_TRANSP, 0);
     lv_obj_set_size(tbar, lv_pct(100), 32);
     lv_obj_set_flex_flow(tbar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(tbar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(tbar, 4, 0);
-    for (int i = 0; i < TEXT_CH; i++) {
-        lv_obj_t *b = lv_button_create(tbar);
+    lv_obj_t *clear = lv_button_create(tbar);
+    lv_obj_set_height(clear, 30);
+    lv_obj_set_style_pad_ver(clear, 0, 0);
+    lv_obj_set_style_pad_hor(clear, 8, 0);
+    lv_obj_t *cl = lv_label_create(clear);
+    lv_label_set_text(cl, LV_SYMBOL_TRASH);
+    lv_obj_center(cl);
+    lv_obj_add_event_cb(clear, clear_text_event, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *subs = plain(lv_obj_create(tbar));
+    lv_obj_set_style_bg_opa(subs, LV_OPA_TRANSP, 0);
+    lv_obj_set_height(subs, 32);
+    lv_obj_set_flex_grow(subs, 1);
+    lv_obj_set_flex_flow(subs, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(subs, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(subs, 3, 0);
+    lv_obj_add_flag(subs, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(subs, LV_DIR_HOR);
+    lv_obj_set_scrollbar_mode(subs, LV_SCROLLBAR_MODE_OFF);
+    for (int i = 0; i < TEXT_SUBS; i++) {
+        lv_obj_t *b = lv_button_create(subs);
         lv_obj_set_height(b, 30);
         lv_obj_set_style_pad_ver(b, 0, 0);
-        lv_obj_set_style_pad_hor(b, 7, 0);    // all the channels and the clear button fit in a row
+        lv_obj_set_style_pad_hor(b, 5, 0);
         lv_obj_set_style_bg_color(b, lv_color_hex(0x2a3550), 0);
         lv_obj_set_style_bg_color(b, lv_color_hex(0x3d6fd6), LV_STATE_CHECKED);
         lv_obj_t *l = lv_label_create(b);
-        lv_obj_set_style_text_font(l, &font_ui_14, 0);
-        lv_obj_set_style_text_color(l, lv_color_hex(TEXT_DEFS[i].color), 0);
+        lv_obj_set_style_text_font(l, &font_ui_12, 0);
+        lv_obj_set_style_text_color(l, lv_color_hex(i < TEXT_CH ? TEXT_DEFS[i].color : 0xd0d0d0), 0);
         lv_obj_center(l);
         lv_obj_add_event_cb(b, text_btn_event, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         text_btn[i] = b;
         text_btn_lbl[i] = l;
     }
-    lv_obj_t *spacer = plain(lv_obj_create(tbar));
-    lv_obj_set_style_bg_opa(spacer, LV_OPA_TRANSP, 0);
-    lv_obj_set_height(spacer, 1);
-    lv_obj_set_flex_grow(spacer, 1);
-    lv_obj_t *clear = lv_button_create(tbar);
-    lv_obj_set_height(clear, 30);
-    lv_obj_set_style_pad_ver(clear, 0, 0);
-    lv_obj_set_style_pad_hor(clear, 10, 0);
-    lv_obj_t *cl = lv_label_create(clear);
-    lv_label_set_text(cl, LV_SYMBOL_TRASH);    // icon only: the channel buttons need the width
-    lv_obj_center(cl);
-    lv_obj_add_event_cb(clear, clear_text_event, LV_EVENT_CLICKED, nullptr);
     for (int i = 0; i < TEXT_CH; i++) {
         lv_obj_t *ta = lv_textarea_create(tab_text);
         lv_obj_set_width(ta, lv_pct(100));
@@ -1524,6 +1667,10 @@ static void build_ui()
         lv_obj_set_style_text_color(ta, lv_color_hex(TEXT_DEFS[i].color), 0);
         ta_text[i] = ta;
     }
+    hell_canvas = make_canvas(tab_text, &hell_buf, HELL_W, HELL_H);
+    lv_obj_add_flag(hell_canvas, LV_OBJ_FLAG_HIDDEN);
+    hell_seq = 0;    // fetch the recent columns again (rebuilds)
+    hell_clear();
     select_text(text_sel);
 
     // FT8 / FT4: one compact line (mode + state) over the messages, newest first.

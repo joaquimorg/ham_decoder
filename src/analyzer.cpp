@@ -15,6 +15,8 @@
 #include "aprs_decoder.h"
 #include "pocsag_decoder.h"
 #include "tone_decoder.h"
+#include "navtex_decoder.h"
+#include "hell_decoder.h"
 #include "fm_demod.h"
 #include "fax_decoder.h"
 #include "sstv_decoder.h"
@@ -63,6 +65,7 @@ int frames = 0;
 int unlock_reports = 0;
 int rtty_unlock_reports = 0;
 int psk_unlock_reports = 0;
+int navtex_unlock_reports = 0;
 int32_t peak_raw = 0;
 uint32_t last_overruns = 0;
 uint32_t report_no = 0;
@@ -393,6 +396,14 @@ void report()
         fsk_lo = fsk_hi = 0.0f;
         snprintf(label, sizeof(label), "%s %.0fHz", psk_mode_name(), psk_tone_hz());
     }
+    // NAVTEX in sync (100 baud, 170 Hz shift) has priority over RTTY, which
+    // also follows 170 Hz FSK.
+    const bool navtex_on = navtex_active() && !psk_on;
+    if (navtex_on) {
+        narrow_tone = false;
+        snprintf(label, sizeof(label), "NAVTEX %.0f/%.0fHz", navtex_space_hz(), navtex_mark_hz());
+    }
+    const float fsk_shift = fsk_hi - fsk_lo;
     // An image being received has priority over both: FAX/SSTV (FM between
     // 1500 and 2300 Hz) looks like FSK to the classifier, and RTTY and CW
     // would print garbage from it.
@@ -410,7 +421,7 @@ void report()
 
     // Keep the CW decoder on the tone; hold the lock through short pauses.
     // A manual tone (web settings) overrides the automatic choice.
-    if (image_on || psk_on) {
+    if (image_on || psk_on || navtex_on) {
         cw_set_tone(0.0f);
     } else if (rtty_on) {
         cw_set_tone(0.0f);
@@ -431,7 +442,7 @@ void report()
     // RTTY follows the two FSK tones, held through short pauses.
     rtty_set_baud(g_settings.rtty_baud);
     rtty_set_polarity((RttyPolarity)g_settings.rtty_polarity);
-    if (image_on || psk_on) {
+    if (image_on || psk_on || navtex_on) {
         if (rtty_mark_hz() > 0.0f)
             rtty_set_tones(0.0f, 0.0f);
     } else if (fsk_lo > 0.0f) {
@@ -445,6 +456,28 @@ void report()
     char rtty_text[RTTY_TEXT_MAX + 1];
     rtty_take_text(rtty_text, sizeof(rtty_text));
     ui_push_text(UI_TEXT_RTTY, rtty_text);
+
+    // NAVTEX follows FSK with a 140-200 Hz shift, held through short pauses.
+    if (image_on || psk_on) {
+        if (navtex_mark_hz() > 0.0f)
+            navtex_set_tones(0.0f, 0.0f);
+    } else if (fsk_lo > 0.0f && fsk_shift >= 140.0f && fsk_shift <= 200.0f) {
+        navtex_set_tones(fsk_lo, fsk_hi);
+        navtex_unlock_reports = 0;
+    } else if (navtex_on) {
+        navtex_unlock_reports = 0;
+    } else if (navtex_mark_hz() > 0.0f && ++navtex_unlock_reports >= RTTY_UNLOCK_REPORTS) {
+        navtex_set_tones(0.0f, 0.0f);
+    }
+    // Feld-Hell paints whatever tone it is given: the manual CW tone (a tap on
+    // the waterfall), else the strongest peak.
+    if (!g_settings.cw_auto_tone)
+        hell_set_tone(g_settings.cw_tone_hz);
+    else if (npeaks > 0 && snr >= SIGNAL_MIN_SNR_DB)
+        hell_set_tone(peaks[0].hz);
+    char navtex_text[NAVTEX_TEXT_MAX + 1];
+    navtex_take_text(navtex_text, sizeof(navtex_text));
+    ui_push_text(UI_TEXT_NAVTEX, navtex_text);
 
     // PSK: locked when the TinyML classifier sees PSK31 (it covers the faster
     // speeds too), retuned only while not decoding (the AFC follows), held
@@ -535,6 +568,7 @@ void report()
     ws.rtty_mark_hz = rtty_mark_hz();
     ws.rtty_space_hz = rtty_space_hz();
     ws.rtty_active = rtty_active();
+    ws.navtex_active = navtex_active();
     ws.psk_hz = psk_tone_hz();
     ws.psk_active = psk_active();
     strlcpy(ws.psk_mode, psk_mode_name(), sizeof(ws.psk_mode));
@@ -545,6 +579,8 @@ void report()
 #endif
     ws.pocsag_recent = pocsag_recent;
     ws.ctcss_hz = ctcss_hz();
+    ws.dcs_code = dcs_code();
+    ws.dcs_inv = dcs_inverted();
     strlcpy(ws.ml_label, ml_class_name(ml.cls), sizeof(ws.ml_label));
     ws.ml_prob = ml.prob;
     ui_push_status(ws);
@@ -589,13 +625,14 @@ void report()
         strlcpy(last_kind, kind, sizeof(last_kind));
         last_ml = ml.cls;
     }
-    if (cw_text[0] || rtty_text[0] || psk_text[0] || aprs_text[0] || pocsag_text[0] || tones_text[0]) {
+    if (cw_text[0] || rtty_text[0] || psk_text[0] || aprs_text[0] || pocsag_text[0] || tones_text[0] || navtex_text[0]) {
         fputs(cw_text, stdout);
         fputs(rtty_text, stdout);
         fputs(psk_text, stdout);
         fputs(aprs_text, stdout);
         fputs(pocsag_text, stdout);
         fputs(tones_text, stdout);
+        fputs(navtex_text, stdout);
         fflush(stdout);
     }
 #endif
@@ -638,6 +675,14 @@ void analyzer_init()
 #if APRS_SELFTEST
     aprs_selftest();
 #endif
+    hell_init();
+#if HELL_SELFTEST
+    hell_selftest();
+#endif
+    navtex_init();
+#if NAVTEX_SELFTEST
+    navtex_selftest();
+#endif
     tones_init();
 #if TONES_SELFTEST
     tones_selftest();
@@ -669,6 +714,8 @@ void analyzer_process_block(const float *x, int32_t raw_peak, uint32_t overruns)
     pocsag_process(x, N);
 #endif
     tones_process(x, N);
+    navtex_process(x, N);
+    hell_process(x, N);
     static float fm_hz[N], fm_mag[N];
     // Blocks dropped since the last one (analysis behind): FAX and SSTV count
     // time in samples, so they get the missing samples as a mid-grey tone

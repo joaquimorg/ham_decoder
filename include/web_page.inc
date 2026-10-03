@@ -143,7 +143,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       <div class="metric"><div class="k">PSK</div><div class="v" id="psk">-</div></div>
       <div class="metric"><div class="k">APRS</div><div class="v" id="aprs">-</div></div>
       <div class="metric" id="pgMetric"><div class="k">POCSAG</div><div class="v" id="pg">-</div></div>
-      <div class="metric"><div class="k">CTCSS</div><div class="v" id="ctcss">-</div></div>
+      <div class="metric"><div class="k">CTCSS / DCS</div><div class="v" id="ctcss">-</div></div>
     </div>
   </section>
 
@@ -165,9 +165,11 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     <button data-tab="cw">CW</button>
     <button data-tab="rtty">RTTY</button>
     <button data-tab="psk">PSK</button>
+    <button data-tab="navtex">NAVTEX</button>
     <button data-tab="aprs">APRS</button>
     <button data-tab="pocsag" id="pgTab">POCSAG</button>
     <button data-tab="tones">DTMF / CTCSS</button>
+    <button data-tab="hell">Hell</button>
     <button data-tab="ftx">FT8 / FT4</button>
     <button data-tab="img">FAX / SSTV</button>
     <button data-tab="cfg">Definições</button>
@@ -254,6 +256,20 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     </section>
   </div>
 
+  <div class="pane" data-pane="navtex">
+    <section class="card">
+      <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+        <h2 style="margin: 0">Texto NAVTEX</h2>
+        <div class="row">
+          <button id="ncopy">Copiar</button>
+          <button id="nclear">Limpar</button>
+        </div>
+      </div>
+      <pre class="decoded" id="ntext"></pre>
+      <div class="note" style="margin-top: 8px">NAVTEX / SITOR-B (518 e 490 kHz, 4209,5 kHz): 100 baud, desvio de 170 Hz, código CCIR 476 com repetição (FEC). Polaridade e sincronismo automáticos; "_" = carácter perdido nas duas cópias.</div>
+    </section>
+  </div>
+
   <div class="pane" data-pane="aprs">
     <section class="card">
       <div class="row" style="justify-content: space-between; margin-bottom: 10px">
@@ -292,7 +308,18 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
         </div>
       </div>
       <pre class="decoded" id="dtext"></pre>
-      <div class="note" style="margin-top: 8px">Sequências DTMF (uma por linha) e os subtons CTCSS detetados (67,0 a 254,1 Hz). O CTCSS precisa do áudio abaixo de 300 Hz: saída de linha ou do discriminador, que muitos rádios cortam no altifalante.</div>
+      <div class="note" style="margin-top: 8px">Sequências DTMF (uma por linha), os subtons CTCSS (67,0 a 254,1 Hz) e os códigos DCS detetados (N/I pode vir trocado se o recetor inverter o áudio). O CTCSS e o DCS precisam do áudio abaixo de 300 Hz: saída de linha ou do discriminador, que muitos rádios cortam no altifalante.</div>
+    </section>
+  </div>
+
+  <div class="pane" data-pane="hell">
+    <section class="card">
+      <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+        <h2 style="margin: 0">Feld-Hell</h2>
+        <button id="hclear">Limpar</button>
+      </div>
+      <canvas id="hellc" width="900" height="84" style="width: 100%; image-rendering: pixelated; background: #000"></canvas>
+      <div class="note" style="margin-top: 8px">O tom é desenhado em colunas de 14 pontos (17,5 por segundo), cada uma repetida por cima da outra: o texto aparece inteiro numa das cópias. Segue o tom CW manual (clica no waterfall) ou o pico mais forte.</div>
     </section>
   </div>
 
@@ -407,11 +434,29 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   wf.width = BINS; wf.height = 300;
   const rowImg = wctx.createImageData(BINS, 1);
 
-  // Text channels in the order of UiTextChannel (CW, RTTY, PSK, APRS, POCSAG, DTMF/CTCSS): the
+  // Text channels in the order of UiTextChannel (CW, RTTY, PSK, APRS, POCSAG, DTMF/CTCSS, NAVTEX): the
   // element each one goes to and the next sequence number wanted.
-  const TEXT_IDS = ['text', 'rtext', 'ptext', 'atext', 'gtext', 'dtext'];
+  const TEXT_IDS = ['text', 'rtext', 'ptext', 'atext', 'gtext', 'dtext', 'ntext'];
   let binHz = 12000 / 1024, rSeq = 0, first = true;
   const tSeqs = TEXT_IDS.map(() => 0);
+  let hSeq = 0;
+  // Feld-Hell: each column (14 levels, bottom first) drawn twice, 3 px per
+  // pixel, the canvas scrolling left.
+  function drawHell(b64) {
+    if (!b64) return;
+    const c = $('hellc'), g = c.getContext('2d'), raw = atob(b64), S = 3, R = 14;
+    const n = Math.floor(raw.length / R);
+    if (!n) return;
+    g.drawImage(c, n * S, 0, c.width - n * S, c.height, 0, 0, c.width - n * S, c.height);
+    for (let k = 0; k < n; k++) {
+      const x = c.width - (n - k) * S;
+      for (let r = 0; r < R; r++) {
+        const v = raw.charCodeAt(k * R + r);
+        g.fillStyle = `rgb(${v * 3 >> 2},${v},${v * 3 >> 2})`;
+        for (let copy = 0; copy < 2; copy++) g.fillRect(x, (copy * R + R - 1 - r) * S, S, S);
+      }
+    }
+  }
   let rtty = { mark: 0, space: 0 }, pskHz = 0;
   let cfg = { auto: true, manual: 700, contrast: 5 };
   let tone = 0;
@@ -508,10 +553,13 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     }
     rSeq = d.r;
 
+    drawHell(d.hl);
+    if (d.hs !== undefined) hSeq = d.hs;
     TEXT_IDS.forEach((id, i) => { if (d.tx && d.tx[i]) appendText(id, d.tx[i]); if (d.s) tSeqs[i] = d.s[i]; });
     $('aprs').textContent = d.aprs_n ? `${d.aprs_n} trama${d.aprs_n > 1 ? 's' : ''}` : '-';
     $('pgTab').hidden = $('pgMetric').hidden = !d.pocsag;
-    $('ctcss').textContent = d.ctcss ? d.ctcss.toFixed(1) + ' Hz' : '-';
+    $('ctcss').textContent = d.ctcss ? d.ctcss.toFixed(1) + ' Hz'
+      : d.dcs >= 0 ? 'DCS ' + d.dcs.toString(8).padStart(3, '0') + (d.dcs_inv ? 'I' : 'N') : '-';
     $('pg').textContent = d.pg_n ? `${d.pg_n} mensage${d.pg_n > 1 ? 'ns' : 'm'}` : '-';
     pskHz = d.psk_on ? d.psk_hz : 0;
     $('psk').textContent = d.psk_hz
@@ -529,7 +577,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     $('sstvAdjust').checked = d.sstv_adjust;
     showFtx(d);
     if (d.gal !== galSeq) loadGallery(d.gal);
-    const live = { cw: !!d.tone, rtty: !!d.rtty_on, psk: !!d.psk_on, aprs: !!d.aprs_on, pocsag: !!d.pg_on, tones: !!d.ctcss, ftx: d.ftx_mode > 0 && d.ftx_time,
+    const live = { cw: !!d.tone, rtty: !!d.rtty_on, psk: !!d.psk_on, navtex: !!d.navtex_on, aprs: !!d.aprs_on, pocsag: !!d.pg_on, tones: !!d.ctcss || d.dcs >= 0, ftx: d.ftx_mode > 0 && d.ftx_time,
                    img: d.fax_state > 0 || d.sstv_rx };
     for (const b of document.querySelectorAll('#tabs button')) b.classList.toggle('live', !!live[b.dataset.tab]);
     faxState = d.fax_state;
@@ -615,7 +663,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     const ctl = new AbortController();
     const guard = setTimeout(() => ctl.abort(), 5000);
     try {
-      const res = await fetch(`/api/data?r=${rSeq}&s=${tSeqs.join(',')}`, { cache: 'no-store', signal: ctl.signal });
+      const res = await fetch(`/api/data?r=${rSeq}&h=${hSeq}&s=${tSeqs.join(',')}`, { cache: 'no-store', signal: ctl.signal });
       update(await res.json());
       setLink(true, 'ao vivo (pedidos)');
       schedule(400);    // ~2.5 requests/s: fewer Wi-Fi bursts, same waterfall
@@ -677,6 +725,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   $('aclear').onclick = () => { $('atext').textContent = ''; };
   copyButton('gcopy', 'gtext');
   $('gclear').onclick = () => { $('gtext').textContent = ''; };
+  copyButton('ncopy', 'ntext');
+  $('nclear').onclick = () => { $('ntext').textContent = ''; };
+  $('hclear').onclick = () => { const c = $('hellc'); c.getContext('2d').clearRect(0, 0, c.width, c.height); };
   copyButton('dcopy', 'dtext');
   $('dclear').onclick = () => { $('dtext').textContent = ''; };
   $('baud').onchange = () => postConfig({ rtty_baud: $('baud').value });
