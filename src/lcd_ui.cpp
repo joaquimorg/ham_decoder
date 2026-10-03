@@ -53,8 +53,12 @@ static const char *TAG = "LCD";
 #define TABBAR_H        36
 #define CONTENT_H       (LCD_V_RES - STATUS_H - TABBAR_H)    // 262
 #define SPEC_H          56
-#define WF_H            138
+#define WF_H            (CONTENT_H - SPEC_H)    // 206: the text lines go over its bottom
 #define TEXT_TAG_W      30      // "CW" / "RT" in front of the text lines
+#define RX_LINE_ROWS    1       // RX tab: text rows per channel (1 = newest text, clipped on the left)
+#define RX_LINE_H       (RX_LINE_ROWS * 15 + 3)    // box height (font_ui_12)
+#define RX_LINES        2       // at most this many channels shown on the RX tab
+#define RX_LINE_HOLD_MS 30000   // a channel's line stays this long after its last text
 #define TEXT_KEEP       300     // characters kept for the two-line view
 #define TEXT_TAB_LINES  25      // lines kept in the Text tab (as shown, after wrapping)
 #define IMG_BAR_H       36      // Image tab: state + buttons under the picture
@@ -331,8 +335,28 @@ static lv_obj_t *tab_rx, *tab_text, *tab_ftx, *tab_img, *tab_cfg;
 static lv_obj_t *lbl_mode, *lbl_info;
 static lv_obj_t *spec_canvas, *wf_canvas, *img_canvas;
 static uint16_t *spec_buf, *wf_buf, *img_buf;
-static lv_obj_t *lbl_cw_line, *lbl_rtty_line;
-static lv_obj_t *ta_cw, *ta_rtty;
+// Text channels: one entry per decoder that produces text. The Text tab has a
+// sub-tab per channel; the RX tab shows, over the bottom of the waterfall, a
+// line for each of the (up to RX_LINES) channels that got text in the last
+// RX_LINE_HOLD_MS, the newest at the bottom - nothing when nothing decodes.
+struct TextChannelDef {
+    UiTextChannel ch;
+    const char *name;     // Text sub-tab
+    const char *tag;      // RX tab, two letters
+    uint32_t color;
+};
+static const TextChannelDef TEXT_DEFS[] = {
+    { UI_TEXT_CW, "CW", "CW", 0x9fe89f },
+    { UI_TEXT_RTTY, "RTTY", "RT", 0xf0d060 },
+    { UI_TEXT_PSK, "PSK", "PK", 0x80c8ff },
+    { UI_TEXT_APRS, "APRS", "AP", 0xff9fd0 },
+};
+constexpr int TEXT_CH = sizeof(TEXT_DEFS) / sizeof(TEXT_DEFS[0]);
+static lv_obj_t *lbl_line[TEXT_CH], *box_line[TEXT_CH], *ta_text[TEXT_CH];
+static uint32_t line_ms[TEXT_CH];       // lv_tick of the channel's last text, 0 = none
+static lv_obj_t *text_btn[TEXT_CH], *text_btn_lbl[TEXT_CH];
+static int text_sel = 0;                // sub-tab shown
+static bool text_unread[TEXT_CH];       // new text in a sub-tab not shown
 static lv_obj_t *ftx_table, *lbl_ftx_state;
 static lv_obj_t *lbl_img_info;
 static lv_obj_t *lbl_cfg_info, *lbl_contrast, *lbl_bright, *lbl_volume, *lbl_web_note;
@@ -438,6 +462,8 @@ static void draw_rows(const uint8_t (*rows)[UI_BINS], int n)
         marker(last_status.rtty_mark_hz, rgb565(255, 220, 0));
         marker(last_status.rtty_space_hz, rgb565(255, 220, 0));
     }
+    if (last_status.psk_active)
+        marker(last_status.psk_hz, rgb565(90, 180, 255));
     if (!g_settings.cw_auto_tone)
         marker(g_settings.cw_tone_hz, rgb565(255, 255, 255));
 
@@ -474,7 +500,39 @@ struct TextView {
     char tail[TEXT_KEEP + 1];    // newest characters, line breaks flattened
     int len;
 };
-static TextView text_views[2] = { { UI_TEXT_CW, 0, "", 0 }, { UI_TEXT_RTTY, 0, "", 0 } };
+static TextView text_views[TEXT_CH];    // .ch set from TEXT_DEFS in build_ui()
+
+// Text sub-tab buttons: the shown one checked, a dot on those with new text.
+static void refresh_text_buttons()
+{
+    for (int i = 0; i < TEXT_CH; i++) {
+        if (!text_btn[i])
+            continue;
+        if (i == text_sel)
+            lv_obj_add_state(text_btn[i], LV_STATE_CHECKED);
+        else
+            lv_obj_remove_state(text_btn[i], LV_STATE_CHECKED);
+        lv_label_set_text_fmt(text_btn_lbl[i], "%s%s", TEXT_DEFS[i].name, text_unread[i] ? " " LV_SYMBOL_BULLET : "");
+    }
+}
+
+static void select_text(int i)
+{
+    text_sel = i;
+    text_unread[i] = false;
+    for (int k = 0; k < TEXT_CH; k++) {
+        if (k == i)
+            lv_obj_remove_flag(ta_text[k], LV_OBJ_FLAG_HIDDEN);
+        else
+            lv_obj_add_flag(ta_text[k], LV_OBJ_FLAG_HIDDEN);
+    }
+    refresh_text_buttons();
+}
+
+static void text_btn_event(lv_event_t *e)
+{
+    select_text((int)(intptr_t)lv_event_get_user_data(e));
+}
 
 // Drops the oldest lines of a text area beyond TEXT_TAB_LINES, counting the
 // lines as displayed (wrapped). The text is ASCII, so letters = bytes.
@@ -494,12 +552,54 @@ static void trim_lines(lv_obj_t *ta)
     lv_textarea_set_text(ta, keep);
 }
 
-static void update_text(TextView &tv, lv_obj_t *line_lbl, lv_obj_t *ta)
+// RX tab second line: RTTY (1) or PSK (2), whichever got text last.
+static void layout_rx_lines()
 {
+    int order[TEXT_CH], n = 0;
+    for (int i = 0; i < TEXT_CH; i++) {
+        if (line_ms[i] && lv_tick_elaps(line_ms[i]) < RX_LINE_HOLD_MS)
+            order[n++] = i;
+        else
+            line_ms[i] = 0;
+    }
+    for (int a = 1; a < n; a++) {    // newest first
+        const int v = order[a];
+        int b = a - 1;
+        while (b >= 0 && line_ms[order[b]] < line_ms[v]) {
+            order[b + 1] = order[b];
+            b--;
+        }
+        order[b + 1] = v;
+    }
+    if (n > RX_LINES)
+        n = RX_LINES;
+    for (int i = 0; i < TEXT_CH; i++) {
+        if (box_line[i])
+            lv_obj_add_flag(box_line[i], LV_OBJ_FLAG_HIDDEN);
+    }
+    for (int k = 0; k < n; k++) {
+        lv_obj_t *box = box_line[order[k]];
+        if (!box)
+            continue;
+        lv_obj_set_y(box, CONTENT_H - (k + 1) * RX_LINE_H);    // flush with the tab bar
+        lv_obj_remove_flag(box, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void update_text(int ch)
+{
+    TextView &tv = text_views[ch];
+    lv_obj_t *line_lbl = lbl_line[ch], *ta = ta_text[ch];
     static char buf[UI_TEXT_RING + 1];
     const int n = ui_get_text(tv.ch, tv.seq, buf, &tv.seq);
     if (n <= 0)
         return;
+    line_ms[ch] = lv_tick_get() | 1;    // never 0
+    layout_rx_lines();
+    if (ch != text_sel && !text_unread[ch]) {
+        text_unread[ch] = true;
+        refresh_text_buttons();
+    }
 
     lv_textarea_set_cursor_pos(ta, LV_TEXTAREA_CURSOR_LAST);    // always append at the end
     lv_textarea_add_text(ta, buf);
@@ -1198,8 +1298,9 @@ static void ui_timer(lv_timer_t *)
 
     if (tick % 5 == 0) {    // 250 ms
         update_status();
-        update_text(text_views[0], lbl_cw_line, ta_cw);
-        update_text(text_views[1], lbl_rtty_line, ta_rtty);
+        for (int ch = 0; ch < TEXT_CH; ch++)
+            update_text(ch);
+        layout_rx_lines();    // lines whose hold time ran out go away
         update_ftx();
     }
     const uint32_t tab = lv_tabview_get_tab_active(tabview);
@@ -1209,15 +1310,17 @@ static void ui_timer(lv_timer_t *)
         update_cfg_info();
 }
 
-// Text tab "Clear": empties that channel's text area and its RX-tab lines.
-static void clear_text_event(lv_event_t *e)
+// Text tab "Clear": empties the shown channel's text area and its RX-tab line.
+static void clear_text_event(lv_event_t *)
 {
-    const int i = (int)(intptr_t)lv_event_get_user_data(e);
+    const int i = text_sel;
     TextView &tv = text_views[i];
     tv.len = 0;
     tv.tail[0] = 0;
-    lv_textarea_set_text(i ? ta_rtty : ta_cw, "");
-    lv_label_set_text(i ? lbl_rtty_line : lbl_cw_line, "");
+    lv_textarea_set_text(ta_text[i], "");
+    lv_label_set_text(lbl_line[i], "");
+    line_ms[i] = 0;
+    layout_rx_lines();
 }
 
 // ---------------------------------------------------------------------------
@@ -1267,7 +1370,8 @@ static void build_ui()
     tab_cfg = lv_tabview_add_tab(tabview, LV_SYMBOL_SETTINGS);
     lv_obj_set_style_text_font(lv_tabview_get_tab_bar(tabview), &font_ui_16, 0);
 
-    // RX: spectrum, waterfall, last two lines of CW and RTTY text.
+    // RX: spectrum, waterfall, and over its bottom the text of the channels
+    // decoding now (see layout_rx_lines).
     spec_canvas = make_canvas(tab_rx, &spec_buf, LCD_H_RES, SPEC_H);
     wf_canvas = make_canvas(tab_rx, &wf_buf, LCD_H_RES, WF_H);
     lv_obj_set_pos(wf_canvas, 0, SPEC_H);
@@ -1276,50 +1380,86 @@ static void build_ui()
         lv_obj_add_event_cb(c, spectrum_event, LV_EVENT_SHORT_CLICKED, nullptr);
         lv_obj_add_event_cb(c, spectrum_event, LV_EVENT_LONG_PRESSED, nullptr);
     }
-    int y = SPEC_H + WF_H + 1;
-    for (int i = 0; i < 2; i++) {
-        const lv_color_t color = lv_color_hex(i ? 0xf0d060 : 0x9fe89f);
-        lv_obj_t *tag = lv_label_create(tab_rx);
-        lv_label_set_text(tag, i ? "RT" : "CW");
-        lv_obj_set_style_text_color(tag, color, 0);
-        lv_obj_set_pos(tag, 4, y + 8);
+    for (int i = 0; i < TEXT_CH; i++) {
+        text_views[i].ch = TEXT_DEFS[i].ch;
+        const lv_color_t color = lv_color_hex(TEXT_DEFS[i].color);
         lv_obj_t *box = plain(lv_obj_create(tab_rx));
-        lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, 0);
-        lv_obj_set_pos(box, TEXT_TAG_W, y);
-        lv_obj_set_size(box, LCD_H_RES - TEXT_TAG_W - 2, 32);
+        lv_obj_set_style_bg_color(box, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(box, LV_OPA_70, 0);
+        lv_obj_set_size(box, LCD_H_RES, RX_LINE_H);
+        lv_obj_remove_flag(box, LV_OBJ_FLAG_CLICKABLE);    // taps reach the waterfall
+        lv_obj_add_flag(box, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_t *tag = lv_label_create(box);
+        lv_label_set_text(tag, TEXT_DEFS[i].tag);
+        lv_obj_set_style_text_font(tag, &font_ui_12, 0);    // fits the one-row box
+        lv_obj_set_style_text_color(tag, color, 0);
+        lv_obj_align(tag, LV_ALIGN_LEFT_MID, 4, 0);
         lv_obj_t *l = lv_label_create(box);
         lv_obj_set_style_text_font(l, &font_ui_12, 0);
         lv_obj_set_style_text_color(l, color, 0);
-        lv_obj_set_width(l, lv_pct(100));
+        lv_obj_set_width(l, LCD_H_RES - TEXT_TAG_W - 2);
+#if RX_LINE_ROWS == 1
+        // One row: right-aligned and clipped, so the newest text is always in view.
+        lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_CLIP);
+        lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_align(l, LV_ALIGN_LEFT_MID, TEXT_TAG_W, 0);
+#else
         lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_WRAP);
-        lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+        lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, TEXT_TAG_W, 0);
+#endif
         lv_label_set_text(l, text_views[i].tail);
-        (i ? lbl_rtty_line : lbl_cw_line) = l;
-        y += 34;
+        lbl_line[i] = l;
+        box_line[i] = box;
     }
+    layout_rx_lines();
 
-    // Text: the last TEXT_TAB_LINES lines of CW and RTTY, each with a clear button.
+    // Text: a sub-tab per channel (buttons on top, a dot = new text) and one
+    // clear button for the channel shown; its last TEXT_TAB_LINES lines below.
     lv_obj_set_flex_flow(tab_text, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(tab_text, 4, 0);
-    lv_obj_set_style_pad_row(tab_text, 2, 0);
-    for (int i = 0; i < 2; i++) {
-        lv_obj_t *head = cfg_row(tab_text, i ? "RTTY" : "CW");
-        lv_obj_set_style_pad_all(head, 0, 0);
-        lv_obj_t *clear = lv_button_create(head);
-        lv_obj_set_height(clear, 26);
-        lv_obj_set_style_pad_ver(clear, 0, 0);
-        lv_obj_t *cl = lv_label_create(clear);
-        lv_label_set_text_fmt(cl, LV_SYMBOL_TRASH " %s", tr(S_CLEAR));
-        lv_obj_center(cl);
-        lv_obj_add_event_cb(clear, clear_text_event, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+    lv_obj_set_style_pad_row(tab_text, 4, 0);
+    lv_obj_t *tbar = plain(lv_obj_create(tab_text));
+    lv_obj_set_style_bg_opa(tbar, LV_OPA_TRANSP, 0);
+    lv_obj_set_size(tbar, lv_pct(100), 32);
+    lv_obj_set_flex_flow(tbar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(tbar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(tbar, 4, 0);
+    for (int i = 0; i < TEXT_CH; i++) {
+        lv_obj_t *b = lv_button_create(tbar);
+        lv_obj_set_height(b, 30);
+        lv_obj_set_style_pad_ver(b, 0, 0);
+        lv_obj_set_style_pad_hor(b, 12, 0);
+        lv_obj_set_style_bg_color(b, lv_color_hex(0x2a3550), 0);
+        lv_obj_set_style_bg_color(b, lv_color_hex(0x3d6fd6), LV_STATE_CHECKED);
+        lv_obj_t *l = lv_label_create(b);
+        lv_obj_set_style_text_color(l, lv_color_hex(TEXT_DEFS[i].color), 0);
+        lv_obj_center(l);
+        lv_obj_add_event_cb(b, text_btn_event, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        text_btn[i] = b;
+        text_btn_lbl[i] = l;
+    }
+    lv_obj_t *spacer = plain(lv_obj_create(tbar));
+    lv_obj_set_style_bg_opa(spacer, LV_OPA_TRANSP, 0);
+    lv_obj_set_height(spacer, 1);
+    lv_obj_set_flex_grow(spacer, 1);
+    lv_obj_t *clear = lv_button_create(tbar);
+    lv_obj_set_height(clear, 30);
+    lv_obj_set_style_pad_ver(clear, 0, 0);
+    lv_obj_t *cl = lv_label_create(clear);
+    lv_label_set_text_fmt(cl, LV_SYMBOL_TRASH " %s", tr(S_CLEAR));
+    lv_obj_center(cl);
+    lv_obj_add_event_cb(clear, clear_text_event, LV_EVENT_CLICKED, nullptr);
+    for (int i = 0; i < TEXT_CH; i++) {
         lv_obj_t *ta = lv_textarea_create(tab_text);
         lv_obj_set_width(ta, lv_pct(100));
         lv_obj_set_flex_grow(ta, 1);
         lv_obj_set_click_focusable(ta, false);
         lv_textarea_set_cursor_click_pos(ta, false);    // a touch only scrolls
         lv_obj_set_style_opa(ta, LV_OPA_TRANSP, LV_PART_CURSOR);
-        (i ? ta_rtty : ta_cw) = ta;
+        lv_obj_set_style_text_color(ta, lv_color_hex(TEXT_DEFS[i].color), 0);
+        ta_text[i] = ta;
     }
+    select_text(text_sel);
 
     // FT8 / FT4: one compact line (mode + state) over the messages, newest first.
     plain(tab_ftx);

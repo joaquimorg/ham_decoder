@@ -172,6 +172,16 @@
 #define RTTY_UNLOCK_REPORTS 5       // seconds without FSK before unlocking
 #define RTTY_TEXT_MAX       64      // decoded characters buffered per report
 
+// PSK31 / PSK63 / PSK125 (psk_decoder.h).
+#define PSK_TEXT_MAX        128     // decoded characters buffered per report (PSK125 is fast)
+#define PSK_UNLOCK_REPORTS  5       // seconds without PSK before unlocking
+#define PSK_SELFTEST        0       // 1 = decode generated signals at boot and log the result
+
+// APRS / AX.25 1200 baud (aprs_decoder.h).
+#define APRS_TEXT_MAX       1024    // decoded frames buffered per report
+#define APRS_RECENT_S       10      // "APRS" shown as live this long after a frame
+#define APRS_SELFTEST       0       // 1 = decode generated AFSK frames at boot and log the result
+
 // Image modes (FAX, SSTV): shared FM discriminator (fm_demod.cpp)
 #define FM_CENTER_HZ        1700.0f // SSTV 1100..2300 Hz, FAX 1500..2300 Hz
 #define FM_CUTOFF_HZ        1000.0f // low-pass after mixing: 700..2700 Hz

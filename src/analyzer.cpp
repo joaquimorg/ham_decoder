@@ -8,6 +8,8 @@
 #include "config.h"
 #include "cw_decoder.h"
 #include "rtty_decoder.h"
+#include "psk_decoder.h"
+#include "aprs_decoder.h"
 #include "fm_demod.h"
 #include "fax_decoder.h"
 #include "sstv_decoder.h"
@@ -54,6 +56,7 @@ float psd_avg[HALF];
 int frames = 0;
 int unlock_reports = 0;
 int rtty_unlock_reports = 0;
+int psk_unlock_reports = 0;
 int32_t peak_raw = 0;
 uint32_t last_overruns = 0;
 uint32_t report_no = 0;
@@ -189,6 +192,29 @@ void print_ruler()
             line[c + i] = lbl[i];
     }
     printf("\n      |%s| Hz\n", line);
+}
+
+// Centre of a PSK signal: power-weighted mean frequency above the floor within
+// +-PSK_CENTRE_HZ of the strongest peak. An idle PSK31 signal has two peaks
+// 31 Hz apart and nothing at its carrier, so the peak itself is off by 15 Hz,
+// beyond the decoder's AFC reach.
+constexpr float PSK_CENTRE_HZ = 80.0f;
+
+float psk_centre(float peak_hz, float noise_db)
+{
+    const float floor_lin = powf(10.0f, noise_db / 10.0f);
+    const int kc = (int)(peak_hz / BIN_HZ + 0.5f), w = (int)(PSK_CENTRE_HZ / BIN_HZ);
+    double sw = 0, swf = 0;
+    for (int k = kc - w; k <= kc + w; k++) {
+        if (k < 1 || k >= HALF)
+            continue;
+        const double p = psd_avg[k] - floor_lin;
+        if (p <= 0)
+            continue;
+        sw += p;
+        swf += p * k * BIN_HZ;
+    }
+    return sw > 0 ? (float)(swf / sw) : peak_hz;
 }
 
 void report()
@@ -353,6 +379,14 @@ void report()
         snprintf(label, sizeof(label), "RTTY %.0f/%.0fHz %.0fbd",
                  rtty_mark_hz(), rtty_space_hz(), rtty_baud());
     }
+    // PSK with clean phase decisions has priority over both: its spectrum
+    // (two close peaks, or a tone) also looks like FSK or CW to the classifier.
+    const bool psk_on = psk_active();
+    if (psk_on) {
+        narrow_tone = false;
+        fsk_lo = fsk_hi = 0.0f;
+        snprintf(label, sizeof(label), "%s %.0fHz", psk_mode_name(), psk_tone_hz());
+    }
     // An image being received has priority over both: FAX/SSTV (FM between
     // 1500 and 2300 Hz) looks like FSK to the classifier, and RTTY and CW
     // would print garbage from it.
@@ -370,7 +404,7 @@ void report()
 
     // Keep the CW decoder on the tone; hold the lock through short pauses.
     // A manual tone (web settings) overrides the automatic choice.
-    if (image_on) {
+    if (image_on || psk_on) {
         cw_set_tone(0.0f);
     } else if (rtty_on) {
         cw_set_tone(0.0f);
@@ -391,7 +425,7 @@ void report()
     // RTTY follows the two FSK tones, held through short pauses.
     rtty_set_baud(g_settings.rtty_baud);
     rtty_set_polarity((RttyPolarity)g_settings.rtty_polarity);
-    if (image_on) {
+    if (image_on || psk_on) {
         if (rtty_mark_hz() > 0.0f)
             rtty_set_tones(0.0f, 0.0f);
     } else if (fsk_lo > 0.0f) {
@@ -405,6 +439,36 @@ void report()
     char rtty_text[RTTY_TEXT_MAX + 1];
     rtty_take_text(rtty_text, sizeof(rtty_text));
     ui_push_text(UI_TEXT_RTTY, rtty_text);
+
+    // PSK: locked when the TinyML classifier sees PSK31 (it covers the faster
+    // speeds too), retuned only while not decoding (the AFC follows), held
+    // through short pauses.
+    const bool ml_psk = strcmp(ml_class_name(ml.cls), "PSK31") == 0 && ml.prob >= 0.6f &&
+                        npeaks > 0 && snr >= SIGNAL_MIN_SNR_DB;
+    if (image_on) {
+        if (psk_tone_hz() > 0.0f)
+            psk_set_tone(0.0f);
+    } else if (psk_on) {
+        psk_unlock_reports = 0;
+    } else if (ml_psk) {
+        const float c = psk_centre(peaks[0].hz, noise_db);
+        if (psk_tone_hz() <= 0.0f || fabsf(c - psk_tone_hz()) > 15.0f)
+            psk_set_tone(c);
+        psk_unlock_reports = 0;
+    } else if (psk_tone_hz() > 0.0f && ++psk_unlock_reports >= PSK_UNLOCK_REPORTS) {
+        psk_set_tone(0.0f);
+    }
+    char psk_text[PSK_TEXT_MAX + 1];
+    psk_take_text(psk_text, sizeof(psk_text));
+    ui_push_text(UI_TEXT_PSK, psk_text);
+
+    // APRS runs all the time (packets are short bursts); a frame this second
+    // names the report.
+    static char aprs_text[APRS_TEXT_MAX + 1];
+    if (aprs_take_text(aprs_text, sizeof(aprs_text)) > 0 && !image_on)
+        snprintf(label, sizeof(label), "APRS %s", aprs_last_source());
+    ui_push_text(UI_TEXT_APRS, aprs_text);
+    const bool aprs_recent = aprs_last_us() && esp_timer_get_time() - aprs_last_us() < APRS_RECENT_S * 1000000LL;
 #if SERIAL_REPORT >= 2
     for (char *p = rtty_text; *p; p++)
         if (*p == '\n')
@@ -447,6 +511,11 @@ void report()
     ws.rtty_mark_hz = rtty_mark_hz();
     ws.rtty_space_hz = rtty_space_hz();
     ws.rtty_active = rtty_active();
+    ws.psk_hz = psk_tone_hz();
+    ws.psk_active = psk_active();
+    strlcpy(ws.psk_mode, psk_mode_name(), sizeof(ws.psk_mode));
+    ws.aprs_frames = aprs_frames();
+    ws.aprs_recent = aprs_recent;
     strlcpy(ws.ml_label, ml_class_name(ml.cls), sizeof(ws.ml_label));
     ws.ml_prob = ml.prob;
     ui_push_status(ws);
@@ -491,9 +560,11 @@ void report()
         strlcpy(last_kind, kind, sizeof(last_kind));
         last_ml = ml.cls;
     }
-    if (cw_text[0] || rtty_text[0]) {
+    if (cw_text[0] || rtty_text[0] || psk_text[0] || aprs_text[0]) {
         fputs(cw_text, stdout);
         fputs(rtty_text, stdout);
+        fputs(psk_text, stdout);
+        fputs(aprs_text, stdout);
         fflush(stdout);
     }
 #endif
@@ -528,6 +599,14 @@ void analyzer_init()
     }
     cw_init();
     rtty_init();
+    psk_init();
+#if PSK_SELFTEST
+    psk_selftest();
+#endif
+    aprs_init();
+#if APRS_SELFTEST
+    aprs_selftest();
+#endif
     fm_demod_init();
     fax_init();
     sstv_init();
@@ -539,10 +618,12 @@ void analyzer_init()
 void analyzer_process_block(const float *x, int32_t raw_peak, uint32_t overruns)
 {
     measure_rate(overruns);
-    capture_push(x, N, cw_tone_hz() > 0.0f || rtty_mark_hz() > 0.0f || fax_state() != FAX_IDLE ||
+    capture_push(x, N, cw_tone_hz() > 0.0f || rtty_mark_hz() > 0.0f || psk_tone_hz() > 0.0f || fax_state() != FAX_IDLE ||
                            sstv_receiving());
     cw_process(x, N);
     rtty_process(x, N);
+    psk_process(x, N);
+    aprs_process(x, N);
     static float fm_hz[N], fm_mag[N];
     // Blocks dropped since the last one (analysis behind): FAX and SSTV count
     // time in samples, so they get the missing samples as a mid-grey tone

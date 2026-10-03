@@ -301,20 +301,21 @@ static int wifi_rssi()
 // Everything a client has not seen yet: spectrum rows and text from the given
 // sequence numbers on (clamped to what the rings still hold), plus the status.
 struct Snapshot {
-    uint32_t rseq, tseq, useq;    // sequence numbers after these rows/text
+    uint32_t rseq;                    // sequence number after these rows
+    uint32_t tseq[UI_TEXT_COUNT];     // ... and after the text of each channel
     int nrows;
     uint8_t rows[ROWS][UI_BINS];
-    char text[2][TEXT_RING + 1];
+    char text[UI_TEXT_COUNT][TEXT_RING + 1];
     UiStatus st;
 };
 EXT_RAM_BSS_ATTR static Snapshot snap;    // used only from the HTTP server task
 
 // A new client (want_row 0) starts with the last 16 rows.
-static void take_snapshot(uint32_t want_row, uint32_t want_t, uint32_t want_u)
+static void take_snapshot(uint32_t want_row, const uint32_t *want_text)
 {
     snap.nrows = ui_get_rows(want_row, snap.rows, want_row ? ROWS : 16, &snap.rseq);
-    ui_get_text(UI_TEXT_CW, want_t, snap.text[UI_TEXT_CW], &snap.tseq);
-    ui_get_text(UI_TEXT_RTTY, want_u, snap.text[UI_TEXT_RTTY], &snap.useq);
+    for (int c = 0; c < UI_TEXT_COUNT; c++)
+        ui_get_text((UiTextChannel)c, want_text[c], snap.text[c], &snap.tseq[c]);
     snap.st = ui_get_status();
 }
 
@@ -324,8 +325,17 @@ static int format_json(bool with_rows, char *json, size_t cap)
 {
     const UiStatus &st = snap.st;
     int n = 0;
-    n += snprintf(json + n, cap - n, "{\"r\":%" PRIu32 ",\"t\":%" PRIu32 ",\"u\":%" PRIu32,
-                  snap.rseq, snap.tseq, snap.useq);
+    // Text channels (UiTextChannel order): "s" = next sequence numbers, "tx" = new text.
+    n += snprintf(json + n, cap - n, "{\"r\":%" PRIu32 ",\"s\":[", snap.rseq);
+    for (int c = 0; c < UI_TEXT_COUNT; c++)
+        n += snprintf(json + n, cap - n, "%s%" PRIu32, c ? "," : "", snap.tseq[c]);
+    n += snprintf(json + n, cap - n, "],\"tx\":[");
+    for (int c = 0; c < UI_TEXT_COUNT; c++) {
+        if (c)
+            n += snprintf(json + n, cap - n, ",");
+        n += json_str(json + n, cap - n, snap.text[c]);
+    }
+    n += snprintf(json + n, cap - n, "]");
     if (with_rows) {
         n += snprintf(json + n, cap - n, ",\"rows\":[");
         for (int i = 0; i < snap.nrows; i++) {
@@ -335,10 +345,11 @@ static int format_json(bool with_rows, char *json, size_t cap)
         }
         n += snprintf(json + n, cap - n, "]");
     }
-    n += snprintf(json + n, cap - n, ",\"text\":");
-    n += json_str(json + n, cap - n, snap.text[UI_TEXT_CW]);
-    n += snprintf(json + n, cap - n, ",\"rtext\":");
-    n += json_str(json + n, cap - n, snap.text[UI_TEXT_RTTY]);
+    n += snprintf(json + n, cap - n, ",\"aprs_n\":%" PRIu32 ",\"aprs_on\":%s", st.aprs_frames,
+                  st.aprs_recent ? "true" : "false");
+    n += snprintf(json + n, cap - n, ",\"psk_hz\":%.1f,\"psk_on\":%s,\"psk_mode\":", st.psk_hz,
+                  st.psk_active ? "true" : "false");
+    n += json_str(json + n, cap - n, st.psk_mode);
     n += snprintf(json + n, cap - n, ",\"label\":");
     n += json_str(json + n, cap - n, st.label);
     n += snprintf(json + n, cap - n, ",\"ml\":");
@@ -387,24 +398,28 @@ static int format_json(bool with_rows, char *json, size_t cap)
     return n;
 }
 
-EXT_RAM_BSS_ATTR static char json_buf[28 * 1024];    // HTTP server task only
+EXT_RAM_BSS_ATTR static char json_buf[36 * 1024];    // HTTP server task only (PSRAM)
 
-// GET /api/data?r=<next row>&t=<next CW char>&u=<next RTTY char>
+// GET /api/data?r=<next row>&s=<next char of each text channel, comma-separated>
 // Polling fallback for browsers where the WebSocket does not work.
 static esp_err_t handle_data(httpd_req_t *req)
 {
-    uint32_t want_row = 0, want_t = 0, want_u = 0;
-    char q[80], v[16];
+    uint32_t want_row = 0, want_text[UI_TEXT_COUNT] = {};
+    char q[160], v[120];
     if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK) {
         if (httpd_query_key_value(q, "r", v, sizeof(v)) == ESP_OK)
             want_row = strtoul(v, nullptr, 10);
-        if (httpd_query_key_value(q, "t", v, sizeof(v)) == ESP_OK)
-            want_t = strtoul(v, nullptr, 10);
-        if (httpd_query_key_value(q, "u", v, sizeof(v)) == ESP_OK)
-            want_u = strtoul(v, nullptr, 10);
+        if (httpd_query_key_value(q, "s", v, sizeof(v)) == ESP_OK) {
+            const char *p = v;
+            for (int c = 0; c < UI_TEXT_COUNT && *p; c++) {
+                char *end;
+                want_text[c] = strtoul(p, &end, 10);
+                p = *end == ',' ? end + 1 : end;
+            }
+        }
     }
     const int64_t t0 = esp_timer_get_time();
-    take_snapshot(want_row, want_t, want_u);
+    take_snapshot(want_row, want_text);
     const int n = format_json(true, json_buf, sizeof(json_buf));
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -569,7 +584,8 @@ static esp_err_t handle_gallery_img(httpd_req_t *req)
 struct WsClient {
     bool used;
     int fd;
-    uint32_t row, t, u;       // next sequence numbers this client needs
+    uint32_t row;             // next sequence numbers this client needs: rows,
+    uint32_t text[UI_TEXT_COUNT];    // text of each channel
     int64_t last_status_us;   // status JSON goes out once a second (or with new text)
 };
 static WsClient ws_clients[WS_MAX_CLIENTS];
@@ -606,7 +622,9 @@ static void ws_add_client(int fd, const char *how)
     }
     for (WsClient &c : ws_clients) {
         if (!c.used) {
-            c = { true, fd, 0, 0, 0, 0 };    // 0 = start with the recent backlog
+            c = {};    // sequence numbers 0 = start with the recent backlog
+            c.used = true;
+            c.fd = fd;
             ESP_LOGW(TAG, "WS: cliente fd %d ligado (%s)", fd, how);
             return;
         }
@@ -664,7 +682,7 @@ static void ws_push_work(void *)
     for (WsClient &c : ws_clients) {
         if (!c.used)
             continue;
-        take_snapshot(c.row, c.t, c.u);
+        take_snapshot(c.row, c.text);
 
         httpd_ws_frame_t f = {};
         esp_err_t err = ESP_OK;
@@ -679,7 +697,9 @@ static void ws_push_work(void *)
             err = httpd_ws_send_frame_async(server, c.fd, &f);
         }
         const int64_t now = esp_timer_get_time();
-        const bool new_text = snap.tseq != c.t || snap.useq != c.u;
+        bool new_text = false;
+        for (int k = 0; k < UI_TEXT_COUNT; k++)
+            new_text |= snap.tseq[k] != c.text[k];
         const bool send_status = new_text || now - c.last_status_us >= WS_STATUS_US;
         if (err == ESP_OK && send_status) {
             f.type = HTTPD_WS_TYPE_TEXT;
@@ -701,8 +721,7 @@ static void ws_push_work(void *)
         ws_frames_sent++;
         c.row = snap.rseq;
         if (send_status) {
-            c.t = snap.tseq;
-            c.u = snap.useq;
+            memcpy(c.text, snap.tseq, sizeof(c.text));
         }
     }
     ws_push_pending = false;

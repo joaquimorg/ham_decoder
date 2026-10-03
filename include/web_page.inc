@@ -46,6 +46,7 @@ canvas { display: block; width: 100%; background: #000; border-radius: 6px; }
 .marker.manual { border-color: var(--manual); }
 .marker.rtty { border-left: 2px dashed #58a6ff; }
 .marker.rtty.space { border-left-style: dotted; }
+.marker.psk { border-left: 2px solid #79c0ff; }
 select { background: var(--panel2); color: var(--text); border: 1px solid var(--line);
          border-radius: 6px; padding: 6px 8px; font: inherit; }
 .hover { position: absolute; top: 6px; right: 8px; font: 12px var(--mono); color: #fff;
@@ -139,6 +140,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       <div class="metric"><div class="k">Tom CW</div><div class="v" id="tone">-</div></div>
       <div class="metric"><div class="k">Velocidade</div><div class="v" id="wpm">-</div></div>
       <div class="metric"><div class="k">RTTY marca/espaço</div><div class="v" id="rtty">-</div></div>
+      <div class="metric"><div class="k">PSK</div><div class="v" id="psk">-</div></div>
+      <div class="metric"><div class="k">APRS</div><div class="v" id="aprs">-</div></div>
     </div>
   </section>
 
@@ -150,14 +153,17 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       <div class="marker" id="marker"></div>
       <div class="marker rtty" id="mMark"></div>
       <div class="marker rtty space" id="mSpace"></div>
+      <div class="marker psk" id="mPsk"></div>
       <div class="hover" id="hover" hidden></div>
     </div>
-    <div class="hint">Verde: tom CW (âmbar em manual). Azul: marca (tracejado) e espaço (pontilhado) do RTTY. Clica no waterfall para fixar o tom CW nessa frequência.</div>
+    <div class="hint">Verde: tom CW (âmbar em manual). Azul: marca (tracejado) e espaço (pontilhado) do RTTY. Azul claro: centro do PSK. Clica no waterfall para fixar o tom CW nessa frequência.</div>
   </section>
 
   <nav class="tabs" id="tabs">
     <button data-tab="cw">CW</button>
     <button data-tab="rtty">RTTY</button>
+    <button data-tab="psk">PSK</button>
+    <button data-tab="aprs">APRS</button>
     <button data-tab="ftx">FT8 / FT4</button>
     <button data-tab="img">FAX / SSTV</button>
     <button data-tab="cfg">Definições</button>
@@ -228,6 +234,34 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
         <div class="note" style="margin-top: 8px">Os tons são detetados automaticamente (desvios de 170 a 850 Hz). Em automático, a marca é o tom que domina no tempo.</div>
       </section>
     </div>
+  </div>
+
+  <div class="pane" data-pane="psk">
+    <section class="card">
+      <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+        <h2 style="margin: 0">Texto PSK</h2>
+        <div class="row">
+          <button id="pcopy">Copiar</button>
+          <button id="pclear">Limpar</button>
+        </div>
+      </div>
+      <pre class="decoded" id="ptext"></pre>
+      <div class="note" style="margin-top: 8px">PSK31, PSK63 e PSK125 (BPSK): a velocidade e o centro do sinal são detetados automaticamente, com AFC.</div>
+    </section>
+  </div>
+
+  <div class="pane" data-pane="aprs">
+    <section class="card">
+      <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+        <h2 style="margin: 0">Tramas APRS</h2>
+        <div class="row">
+          <button id="acopy">Copiar</button>
+          <button id="aclear">Limpar</button>
+        </div>
+      </div>
+      <pre class="decoded" id="atext"></pre>
+      <div class="note" style="margin-top: 8px">AX.25 a 1200 baud (AFSK 1200/2200 Hz), a partir do áudio de um recetor FM (por exemplo 144,800 MHz). Só aparecem tramas com o CRC correto, no formato ORIGEM&gt;DESTINO,CAMINHO:informação.</div>
+    </section>
   </div>
 
   <div class="pane" data-pane="ftx">
@@ -341,8 +375,12 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   wf.width = BINS; wf.height = 300;
   const rowImg = wctx.createImageData(BINS, 1);
 
-  let binHz = 12000 / 1024, rSeq = 0, tSeq = 0, uSeq = 0, first = true;
-  let rtty = { mark: 0, space: 0 };
+  // Text channels in the order of UiTextChannel (CW, RTTY, PSK, APRS): the
+  // element each one goes to and the next sequence number wanted.
+  const TEXT_IDS = ['text', 'rtext', 'ptext', 'atext'];
+  let binHz = 12000 / 1024, rSeq = 0, first = true;
+  const tSeqs = TEXT_IDS.map(() => 0);
+  let rtty = { mark: 0, space: 0 }, pskHz = 0;
   let cfg = { auto: true, manual: 700, contrast: 5 };
   let tone = 0;
 
@@ -403,6 +441,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     $('marker').classList.toggle('manual', !cfg.auto);
     place($('mMark'), rtty.mark);
     place($('mSpace'), rtty.space);
+    place($('mPsk'), pskHz);
   }
 
   const MAX_LINES = 30;    // older lines of decoded text are dropped
@@ -437,10 +476,11 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     }
     rSeq = d.r;
 
-    appendText('text', d.text);
-    appendText('rtext', d.rtext);
-    tSeq = d.t;
-    uSeq = d.u;
+    TEXT_IDS.forEach((id, i) => { if (d.tx && d.tx[i]) appendText(id, d.tx[i]); if (d.s) tSeqs[i] = d.s[i]; });
+    $('aprs').textContent = d.aprs_n ? `${d.aprs_n} trama${d.aprs_n > 1 ? 's' : ''}` : '-';
+    pskHz = d.psk_on ? d.psk_hz : 0;
+    $('psk').textContent = d.psk_hz
+      ? `${d.psk_mode} ${d.psk_hz.toFixed(0)} Hz${d.psk_on ? '' : ' (silêncio)'}` : '-';
     rtty.mark = d.rtty_mark; rtty.space = d.rtty_space;
     $('rtty').textContent = d.rtty_mark
       ? `${d.rtty_mark.toFixed(0)}/${d.rtty_space.toFixed(0)}${d.rtty_on ? '' : ' (silêncio)'}` : '-';
@@ -454,7 +494,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     $('sstvAdjust').checked = d.sstv_adjust;
     showFtx(d);
     if (d.gal !== galSeq) loadGallery(d.gal);
-    const live = { cw: !!d.tone, rtty: !!d.rtty_on, ftx: d.ftx_mode > 0 && d.ftx_time,
+    const live = { cw: !!d.tone, rtty: !!d.rtty_on, psk: !!d.psk_on, aprs: !!d.aprs_on, ftx: d.ftx_mode > 0 && d.ftx_time,
                    img: d.fax_state > 0 || d.sstv_rx };
     for (const b of document.querySelectorAll('#tabs button')) b.classList.toggle('live', !!live[b.dataset.tab]);
     faxState = d.fax_state;
@@ -540,7 +580,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     const ctl = new AbortController();
     const guard = setTimeout(() => ctl.abort(), 5000);
     try {
-      const res = await fetch(`/api/data?r=${rSeq}&t=${tSeq}&u=${uSeq}`, { cache: 'no-store', signal: ctl.signal });
+      const res = await fetch(`/api/data?r=${rSeq}&s=${tSeqs.join(',')}`, { cache: 'no-store', signal: ctl.signal });
       update(await res.json());
       setLink(true, 'ao vivo (pedidos)');
       schedule(400);    // ~2.5 requests/s: fewer Wi-Fi bursts, same waterfall
@@ -596,6 +636,10 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   copyButton('rcopy', 'rtext');
   $('clear').onclick = () => { $('text').textContent = ''; };
   $('rclear').onclick = () => { $('rtext').textContent = ''; };
+  copyButton('pcopy', 'ptext');
+  $('pclear').onclick = () => { $('ptext').textContent = ''; };
+  copyButton('acopy', 'atext');
+  $('aclear').onclick = () => { $('atext').textContent = ''; };
   $('baud').onchange = () => postConfig({ rtty_baud: $('baud').value });
   $('pol').onchange = () => postConfig({ rtty_pol: $('pol').value });
 

@@ -17,6 +17,8 @@ Descodificador/analisador de sinais de rádio **autónomo**, baseado em ESP32-S3
 
 - **Espectro e waterfall** em tempo real, com deteção e classificação automática do sinal (ruído, tom, CW, RTTY/FSK, PSK31, voz), por heurística e por um modelo **TinyML** (MLP int8) a correr na própria placa.
 - **CW (Morse)** e **RTTY** (Baudot, 45,45 / 50 / 75 baud), com estimativa de WPM, AFC e polaridade automática.
+- **PSK31 / PSK63 / PSK125** (BPSK, Varicode), com deteção automática da velocidade e do centro do sinal, e AFC.
+- **APRS / AX.25 a 1200 baud** (AFSK), a partir do áudio de um recetor FM; só mostra tramas com CRC válido.
 - **FAX meteorológico (WEFAX)** e **SSTV** (Martin, Scottie, Robot, PD), com imagens apresentadas ao vivo. O FAX tem squelch, filtro de mediana, seguimento do período da linha e resincronização em saltos do sinal.
 - **FT8 / FT4**, com a biblioteca [ft8_lib](components/ft8_lib/README.md) (MIT).
 - **Ecrã LCD com touch** de 4" (interface em português e inglês) e, opcionalmente, uma **página web** por Wi-Fi com os mesmos dados.
@@ -86,6 +88,8 @@ A **standalone** radio signal decoder/analyzer built on the ESP32-S3. It connect
 
 - Real-time **spectrum and waterfall**, with automatic signal detection and classification (noise, tone, CW, RTTY/FSK, PSK31, voice), using both heuristics and an on-device **TinyML** model (int8 MLP).
 - **CW (Morse)** and **RTTY** (Baudot, 45.45 / 50 / 75 baud), with WPM estimation, AFC and automatic polarity.
+- **PSK31 / PSK63 / PSK125** (BPSK, Varicode), with automatic speed and centre detection, and AFC.
+- **APRS / AX.25 at 1200 baud** (AFSK), from the audio of an FM receiver; only frames with a valid CRC are shown.
 - **Weather FAX (WEFAX)** and **SSTV** (Martin, Scottie, Robot, PD), with live image display. FAX has squelch, noise median filtering, line-length tracking and resync after signal jumps.
 - **FT8 / FT4**, using the [ft8_lib](components/ft8_lib/README.md) library (MIT).
 - **4" touch LCD** (Portuguese and English UI) and, optionally, a **web page** over Wi-Fi showing the same data.

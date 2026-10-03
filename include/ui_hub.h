@@ -27,11 +27,16 @@ struct UiStatus {
     float rtty_mark_hz;     // 0 = unlocked
     float rtty_space_hz;
     bool rtty_active;       // squelch open
+    float psk_hz;           // PSK decoder centre, 0 = unlocked
+    bool psk_active;        // squelch open
+    char psk_mode[8];       // "PSK31", "PSK63", "PSK125"
+    uint32_t aprs_frames;   // APRS frames since boot
+    bool aprs_recent;       // a frame in the last APRS_RECENT_S seconds
     char ml_label[8];       // TinyML classifier
     float ml_prob;
 };
 
-enum UiTextChannel { UI_TEXT_CW = 0, UI_TEXT_RTTY = 1 };
+enum UiTextChannel { UI_TEXT_CW = 0, UI_TEXT_RTTY = 1, UI_TEXT_PSK = 2, UI_TEXT_APRS = 3, UI_TEXT_COUNT };
 
 // Creates the shared state. Call before any producer runs.
 void ui_hub_init();

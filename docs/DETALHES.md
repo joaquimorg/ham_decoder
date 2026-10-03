@@ -206,6 +206,20 @@ Para juntar exemplos reais: `ML_LOG_FEATURES 1` e `ML_LOG_LABEL "CW"` em `config
 - [x] validação no PC: `tools/fax_sim.py`, `tools/sstv_sim.py`, `tools/ftx_test/`
 - [ ] validar com sinais reais do rádio
 
+### V0.9 - PSK
+- [x] BPSK31 / 63 / 125 em paralelo (filtro adaptado de um símbolo, relógio pelas fases de energia), escolhe a velocidade por qualidade de fase × contraste do relógio
+- [x] Varicode (tabela conferida com a do fldigi), AFC (grossa pelo desmodulador de 125 baud), squelch pela qualidade de fase
+- [x] centro do sinal pelo centroide do espetro (o PSK31 em repouso não tem portadora), bloqueio pela classe PSK31 do TinyML
+- [x] autoteste na placa (`PSK_SELFTEST`): as três velocidades com ruído e 4 Hz de erro de sintonia
+- [ ] validar com sinais reais do rádio
+
+### V0.10 - APRS
+- [x] AFSK 1200/2200 Hz: correladores de um bit, nível de cada tom normalizado à parte (inclinação da de-ênfase FM), diferença suavizada em meio bit
+- [x] relógio por DPLL, NRZI, HDLC (flags, bit stuffing, abort), FCS CRC-16
+- [x] AX.25 UI → formato monitor `ORIGEM>DESTINO,CAMINHO:informação`
+- [x] autoteste na placa (`APRS_SELFTEST`) e modelo no PC (`tools/aprs_sim.py`)
+- [ ] validar com sinais reais do rádio (144,800 MHz)
+
 ### V0.7 - SD Card
 - [ ] gravação de amostras
 - [ ] configuração
@@ -236,6 +250,8 @@ rx_analyzer/
 │   ├── analyzer.h
 │   ├── cw_decoder.h
 │   ├── rtty_decoder.h
+│   ├── psk_decoder.h
+│   ├── aprs_decoder.h
 │   ├── fm_demod.h
 │   ├── fax_decoder.h
 │   ├── sstv_decoder.h
@@ -261,6 +277,8 @@ rx_analyzer/
 │   ├── analyzer.cpp
 │   ├── cw_decoder.cpp
 │   ├── rtty_decoder.cpp
+│   ├── psk_decoder.cpp
+│   ├── aprs_decoder.cpp
 │   ├── fm_demod.cpp     (discriminador FM para FAX e SSTV)
 │   ├── fax_decoder.cpp
 │   ├── sstv_decoder.cpp

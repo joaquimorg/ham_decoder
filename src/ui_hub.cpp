@@ -26,7 +26,7 @@ struct TextRing {
     char buf[UI_TEXT_RING];
     uint32_t seq = 0;           // number of characters ever pushed
 };
-static TextRing texts[2];       // UiTextChannel: CW, RTTY
+static TextRing texts[UI_TEXT_COUNT];    // UiTextChannel: CW, RTTY, PSK, APRS
 
 static UiStatus status;
 static volatile float analysis_load = 0.0f;
