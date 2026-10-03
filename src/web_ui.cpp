@@ -160,7 +160,7 @@ static void start_access_point()
     ESP_LOGW(TAG, "ponto de acesso \"%s\" (password \"%s\"): http://192.168.4.1/", AP_SSID, AP_PASS);
 }
 
-static void wifi_start()
+static bool wifi_start()
 {
     wifi_events = xEventGroupCreate();
     ESP_ERROR_CHECK(esp_netif_init());
@@ -169,7 +169,14 @@ static void wifi_start()
     esp_netif_set_hostname(sta_netif, HOSTNAME);
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    const esp_err_t err = esp_wifi_init(&cfg);
+    if (err != ESP_OK) {
+        // Usually the internal RAM: without this check the abort rebooted
+        // the device in a loop.
+        ESP_LOGE(TAG, "esp_wifi_init: %s (RAM interna livre %u B); sem Wi-Fi nem pagina web", esp_err_to_name(err),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        return false;
+    }
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi_event, nullptr));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_wifi_event, nullptr));
 
@@ -190,7 +197,7 @@ static void wifi_start()
     if (!g_settings.wifi_ssid[0]) {
         ESP_LOGW(TAG, "sem rede Wi-Fi configurada");
         start_access_point();
-        return;
+        return true;
     }
     ESP_LOGI(TAG, "a ligar a \"%s\"...", g_settings.wifi_ssid);
     const EventBits_t bits = xEventGroupWaitBits(wifi_events, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE,
@@ -199,6 +206,7 @@ static void wifi_start()
         ESP_LOGW(TAG, "nao liga a \"%s\" (continua a tentar)", g_settings.wifi_ssid);
         start_access_point();
     }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +355,8 @@ static int format_json(bool with_rows, char *json, size_t cap)
     }
     n += snprintf(json + n, cap - n, ",\"aprs_n\":%" PRIu32 ",\"aprs_on\":%s", st.aprs_frames,
                   st.aprs_recent ? "true" : "false");
+    n += snprintf(json + n, cap - n, ",\"pocsag\":%s,\"pg_n\":%" PRIu32 ",\"pg_on\":%s",
+                  POCSAG_ENABLE ? "true" : "false", st.pocsag_msgs, st.pocsag_recent ? "true" : "false");
     n += snprintf(json + n, cap - n, ",\"psk_hz\":%.1f,\"psk_on\":%s,\"psk_mode\":", st.psk_hz,
                   st.psk_active ? "true" : "false");
     n += json_str(json + n, cap - n, st.psk_mode);
@@ -899,8 +909,8 @@ static void http_start()
 // Joining the network waits up to STA_TIMEOUT_MS, so it runs in its own task.
 static void web_task(void *)
 {
-    wifi_start();
-    http_start();
+    if (wifi_start())
+        http_start();
     vTaskDelete(nullptr);
 }
 

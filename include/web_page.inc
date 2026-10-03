@@ -142,6 +142,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       <div class="metric"><div class="k">RTTY marca/espaço</div><div class="v" id="rtty">-</div></div>
       <div class="metric"><div class="k">PSK</div><div class="v" id="psk">-</div></div>
       <div class="metric"><div class="k">APRS</div><div class="v" id="aprs">-</div></div>
+      <div class="metric" id="pgMetric"><div class="k">POCSAG</div><div class="v" id="pg">-</div></div>
     </div>
   </section>
 
@@ -164,6 +165,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     <button data-tab="rtty">RTTY</button>
     <button data-tab="psk">PSK</button>
     <button data-tab="aprs">APRS</button>
+    <button data-tab="pocsag" id="pgTab">POCSAG</button>
     <button data-tab="ftx">FT8 / FT4</button>
     <button data-tab="img">FAX / SSTV</button>
     <button data-tab="cfg">Definições</button>
@@ -261,6 +263,20 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       </div>
       <pre class="decoded" id="atext"></pre>
       <div class="note" style="margin-top: 8px">AX.25 a 1200 baud (AFSK 1200/2200 Hz), a partir do áudio de um recetor FM (por exemplo 144,800 MHz). Só aparecem tramas com o CRC correto, no formato ORIGEM&gt;DESTINO,CAMINHO:informação.</div>
+    </section>
+  </div>
+
+  <div class="pane" data-pane="pocsag">
+    <section class="card">
+      <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+        <h2 style="margin: 0">Mensagens POCSAG</h2>
+        <div class="row">
+          <button id="gcopy">Copiar</button>
+          <button id="gclear">Limpar</button>
+        </div>
+      </div>
+      <pre class="decoded" id="gtext"></pre>
+      <div class="note" style="margin-top: 8px">512, 1200 e 2400 baud, polaridade automática, correção de até 2 bits por palavra; "(?)" = mensagem com palavras irrecuperáveis. Melhor com a saída do discriminador do recetor do que com o altifalante. Atenção: receber e mostrar mensagens de terceiros pode ser proibido por lei.</div>
     </section>
   </div>
 
@@ -375,9 +391,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   wf.width = BINS; wf.height = 300;
   const rowImg = wctx.createImageData(BINS, 1);
 
-  // Text channels in the order of UiTextChannel (CW, RTTY, PSK, APRS): the
+  // Text channels in the order of UiTextChannel (CW, RTTY, PSK, APRS, POCSAG): the
   // element each one goes to and the next sequence number wanted.
-  const TEXT_IDS = ['text', 'rtext', 'ptext', 'atext'];
+  const TEXT_IDS = ['text', 'rtext', 'ptext', 'atext', 'gtext'];
   let binHz = 12000 / 1024, rSeq = 0, first = true;
   const tSeqs = TEXT_IDS.map(() => 0);
   let rtty = { mark: 0, space: 0 }, pskHz = 0;
@@ -478,6 +494,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 
     TEXT_IDS.forEach((id, i) => { if (d.tx && d.tx[i]) appendText(id, d.tx[i]); if (d.s) tSeqs[i] = d.s[i]; });
     $('aprs').textContent = d.aprs_n ? `${d.aprs_n} trama${d.aprs_n > 1 ? 's' : ''}` : '-';
+    $('pgTab').hidden = $('pgMetric').hidden = !d.pocsag;
+    $('pg').textContent = d.pg_n ? `${d.pg_n} mensage${d.pg_n > 1 ? 'ns' : 'm'}` : '-';
     pskHz = d.psk_on ? d.psk_hz : 0;
     $('psk').textContent = d.psk_hz
       ? `${d.psk_mode} ${d.psk_hz.toFixed(0)} Hz${d.psk_on ? '' : ' (silêncio)'}` : '-';
@@ -494,7 +512,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     $('sstvAdjust').checked = d.sstv_adjust;
     showFtx(d);
     if (d.gal !== galSeq) loadGallery(d.gal);
-    const live = { cw: !!d.tone, rtty: !!d.rtty_on, psk: !!d.psk_on, aprs: !!d.aprs_on, ftx: d.ftx_mode > 0 && d.ftx_time,
+    const live = { cw: !!d.tone, rtty: !!d.rtty_on, psk: !!d.psk_on, aprs: !!d.aprs_on, pocsag: !!d.pg_on, ftx: d.ftx_mode > 0 && d.ftx_time,
                    img: d.fax_state > 0 || d.sstv_rx };
     for (const b of document.querySelectorAll('#tabs button')) b.classList.toggle('live', !!live[b.dataset.tab]);
     faxState = d.fax_state;
@@ -640,6 +658,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   $('pclear').onclick = () => { $('ptext').textContent = ''; };
   copyButton('acopy', 'atext');
   $('aclear').onclick = () => { $('atext').textContent = ''; };
+  copyButton('gcopy', 'gtext');
+  $('gclear').onclick = () => { $('gtext').textContent = ''; };
   $('baud').onchange = () => postConfig({ rtty_baud: $('baud').value });
   $('pol').onchange = () => postConfig({ rtty_pol: $('pol').value });
 

@@ -182,6 +182,15 @@
 #define APRS_RECENT_S       10      // "APRS" shown as live this long after a frame
 #define APRS_SELFTEST       0       // 1 = decode generated AFSK frames at boot and log the result
 
+// POCSAG pagers 512/1200/2400 baud (pocsag_decoder.h). Receiving and showing
+// third-party paging messages may be restricted by law where you are (in
+// Portugal, interception of communications not meant for the public is): 0
+// leaves the decoder out of the firmware.
+#define POCSAG_ENABLE       1
+#define POCSAG_TEXT_MAX     1024    // decoded messages buffered per report
+#define POCSAG_RECENT_S     10      // "POCSAG" shown as live this long after a message
+#define POCSAG_SELFTEST     0       // 1 = decode generated transmissions at boot and log the result
+
 // Image modes (FAX, SSTV): shared FM discriminator (fm_demod.cpp)
 #define FM_CENTER_HZ        1700.0f // SSTV 1100..2300 Hz, FAX 1500..2300 Hz
 #define FM_CUTOFF_HZ        1000.0f // low-pass after mixing: 700..2700 Hz

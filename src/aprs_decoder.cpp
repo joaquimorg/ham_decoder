@@ -3,8 +3,13 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
+#include "esp_attr.h"
 #include "esp_timer.h"
+
+#include "aprs_format.h"
+#include "settings.h"
 
 namespace {
 
@@ -28,7 +33,7 @@ constexpr float PLL_INERTIA_LOCKED = 0.74f, PLL_INERTIA_SEARCH = 0.5f;
 // of 30 where the raw difference decoded 5-15.
 constexpr int SMOOTH = 5;
 
-constexpr int MIN_FRAME = 18;     // 2 addresses + control + PID + FCS
+constexpr int MIN_FRAME = 17;     // 2 addresses + control + FCS (supervisory frames)
 constexpr int MAX_FRAME = 340;    // up to 8 digipeaters + 256 bytes of information
 
 struct Tone {
@@ -89,10 +94,10 @@ bool in_frame = false;
 int ones = 0;
 uint8_t acc = 0;
 int bitpos = 0;
-uint8_t frame[MAX_FRAME];
+EXT_RAM_BSS_ATTR uint8_t frame[MAX_FRAME];
 int nbytes = 0;
 
-char text[APRS_TEXT_MAX];
+EXT_RAM_BSS_ATTR char text[APRS_TEXT_MAX];
 size_t text_len = 0;
 uint32_t frames_ok = 0;
 char last_src[12] = "";
@@ -109,20 +114,15 @@ uint16_t fcs(const uint8_t *p, int n)
     return crc ^ 0xFFFF;
 }
 
-// One AX.25 address (7 bytes) as "CALL-SSID".
-int format_call(const uint8_t *a, char *out)
+// "HH:MM:SSZ " (UTC) when the clock has been set (NTP or the web page), else "".
+int utc_stamp(char *out, size_t size)
 {
-    int k = 0;
-    for (int i = 0; i < 6; i++) {
-        const char c = (char)(a[i] >> 1);
-        if (c != ' ')
-            out[k++] = c;
-    }
-    const int ssid = (a[6] >> 1) & 0x0F;
-    if (ssid)
-        k += sprintf(out + k, "-%d", ssid);
-    out[k] = 0;
-    return k;
+    const time_t t = time(nullptr);
+    if (t < 1704067200)
+        return 0;
+    struct tm tm;
+    gmtime_r(&t, &tm);
+    return snprintf(out, size, "%02d:%02d:%02dZ ", tm.tm_hour, tm.tm_min, tm.tm_sec);
 }
 
 void append(const char *s)
@@ -140,38 +140,14 @@ void frame_done()
         return;
     const int len = nbytes - 2;
 
-    // Addresses: 7 bytes each, the last one has bit 0 of its SSID byte set.
-    int naddr = 0;
-    while (naddr < 10 && (naddr + 1) * 7 <= len) {
-        naddr++;
-        if (frame[naddr * 7 - 1] & 1)
-            break;
-    }
-    if (naddr < 2 || !(frame[naddr * 7 - 1] & 1) || naddr * 7 + 2 > len)
+    // Every valid frame is shown: APRS interpreted, any other packet raw.
+    char stamp[16] = "";
+    utc_stamp(stamp, sizeof(stamp));
+    EXT_RAM_BSS_ATTR static char line[1024];
+    char src[12] = "";
+    if (aprs_format(frame, len, g_settings.language == LANG_EN, stamp, line, sizeof(line), src, sizeof(src)) <= 0)
         return;
-    const uint8_t ctrl = frame[naddr * 7];
-    if ((ctrl & ~0x10) != 0x03)
-        return;    // not a UI frame (APRS only uses UI frames)
-
-    char line[MAX_FRAME + 128];
-    char call[12];
-    int k = 0;
-    format_call(frame + 7, call);    // source
-    strlcpy(last_src, call, sizeof(last_src));
-    k += sprintf(line + k, "%s>", call);
-    format_call(frame, call);        // destination
-    k += sprintf(line + k, "%s", call);
-    for (int a = 2; a < naddr; a++) {
-        format_call(frame + a * 7, call);
-        k += sprintf(line + k, ",%s%s", call, (frame[a * 7 + 6] & 0x80) ? "*" : "");
-    }
-    line[k++] = ':';
-    for (int i = naddr * 7 + 2; i < len && k < (int)sizeof(line) - 2; i++) {
-        const uint8_t c = frame[i];
-        line[k++] = (c >= 0x20 && c < 0x7F) ? (char)c : '.';
-    }
-    line[k++] = '\n';
-    line[k] = 0;
+    strlcpy(last_src, src, sizeof(last_src));
     append(line);
     frames_ok++;
     last_us = esp_timer_get_time();
@@ -309,12 +285,13 @@ void aprs_selftest()
 {
     static const char *const CALLS[] = { "APRS", "CT1ABC-9", "WIDE1-1" };
     static const char *const INFO = "!3842.50N/00909.00W>Teste APRS 1200";
-    static const char *const EXPECT = "CT1ABC-9>APRS,WIDE1-1:!3842.50N/00909.00W>Teste APRS 1200";
+    static const char *const EXPECT = "CT1ABC-9>APRS via WIDE1-1";
+    static const char *const EXPECT_POS = "38.7083N 9.1500W";
     uint8_t fr[128];
     const int flen = build_frame(fr, CALLS, 3, INFO);
 
     // Bits: flags, the stuffed frame (LSB first), flags.
-    static uint8_t bits[4096];
+    EXT_RAM_BSS_ATTR static uint8_t bits[4096];
     int nb = 0;
     auto flag = [&]() { for (int b = 0; b < 8; b++) bits[nb++] = (0x7E >> b) & 1; };
     for (int k = 0; k < 40; k++)
@@ -347,7 +324,7 @@ void aprs_selftest()
         { "ruido 0.05 + taxa +1%", 0.7f, 0.05f, 1.01f },
         { "plano + ruido 0.08", 1.0f, 0.08f, 1.0f },
     };
-    static float block[FFT_SIZE];
+    EXT_RAM_BSS_ATTR static float block[FFT_SIZE];
     for (const Case &c : CASES) {
         const uint32_t before = aprs_frames();
         char got[256] = "";
@@ -400,9 +377,37 @@ void aprs_selftest()
         }
         for (char *p = got; *p; p++)
             if (*p == '\n')
-                *p = 0;
+                *p = '|';
         ESP_LOGW("APRS", "autoteste %s: %u trama(s) \"%s\" %s", c.name, (unsigned)(aprs_frames() - before), got,
-                 strcmp(got, EXPECT) == 0 ? "OK" : "FALHOU");
+                 strstr(got, EXPECT) && strstr(got, EXPECT_POS) ? "OK" : "FALHOU");
+    }
+
+    // Formatter on frames heard on the air and a few kinds of packet.
+    struct Sample { const char *calls[5]; int ncalls; const char *info; };
+    static const Sample SAMPLES[] = {
+        { { "APZMDM", "CQ0UAI", "CQ0PSI-3", "CQ0PMJ-3", "WIDE2-1" }, 5,
+          "=3932.14N/00838.18WrCQ0UAI - Falha de Energia na Rede - Bateria 13.5 Volt" },
+        { { "APN382", "CQ0PAL-3", "CQ0PSI-3", "CQ0PMJ-3", "WIDE3-1" }, 5,
+          "!3829.43NT00910.11W#DIGIPEATER LAGOA D.ALBUFEIRA(REP)." },
+        { { "APJIW4", "CQ0PQC-13", "CQ0PSI-3", "CQ0PMJ-3", "WIDE3-1" }, 5,
+          "/071306z3834.80N/00902.75W_000/000g000t073h54j0jDvsQuinta do Conde/A=000098" },
+        { { "APRS", "CT1ABC-9", "WIDE1-1" }, 3, ":CT2XYZ   :Ola, teste de mensagem{12" },
+        { { "APRS", "CT1ABC-9" }, 2, ">Em QRV na 145.500" },
+    };
+    EXT_RAM_BSS_ATTR static char out[1024];
+    uint8_t f[200];
+    for (const Sample &sm : SAMPLES) {
+        const int n = build_frame(f, sm.calls, sm.ncalls, sm.info);
+        aprs_format(f, n - 2, false, "", out, sizeof(out), nullptr, 0);
+        ESP_LOGW("APRS", "formato:\n%s", out);
+    }
+    {    // SABM (connect request): not APRS, shown raw
+        static const char *const CALLS[] = { "CT2XYZ", "CT1ABC" };
+        int n = build_frame(f, CALLS, 2, "");
+        f[14] = 0x3F;
+        n = 15;
+        aprs_format(f, n, false, "", out, sizeof(out), nullptr, 0);
+        ESP_LOGW("APRS", "formato:\n%s", out);
     }
 }
 

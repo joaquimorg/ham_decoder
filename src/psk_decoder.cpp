@@ -178,7 +178,7 @@ float osc_r = 1.0f, osc_i = 0.0f, rot_r = 1.0f, rot_i = 0.0f;
 int shown = 0;
 bool active = false;
 
-char text[PSK_TEXT_MAX];
+EXT_RAM_BSS_ATTR char text[PSK_TEXT_MAX];
 size_t text_len = 0;
 
 void retune(float hz)
@@ -292,13 +292,13 @@ size_t psk_take_text(char *buf, size_t size)
 void psk_selftest()
 {
     static const char *const MSG = "CQ CQ DE CT1ABC CT1ABC PSE K\n";
-    static float block[FFT_SIZE];
+    EXT_RAM_BSS_ATTR static float block[FFT_SIZE];
     for (int m = 0; m < NMODES; m++) {
         const float baud = MODE_BAUD[m];
         const int sps = (int)(FS / baud + 0.5f);
         const float f0 = 1000.0f, offset = 4.0f;    // decoder set 4 Hz off
         // Bits: idle reversals, the message twice, idle.
-        static uint8_t bits[2048];
+        EXT_RAM_BSS_ATTR static uint8_t bits[2048];
         int nb = 0;
         for (int k = 0; k < 64; k++)
             bits[nb++] = 0;

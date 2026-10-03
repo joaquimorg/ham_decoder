@@ -216,9 +216,23 @@ Para juntar exemplos reais: `ML_LOG_FEATURES 1` e `ML_LOG_LABEL "CW"` em `config
 ### V0.10 - APRS
 - [x] AFSK 1200/2200 Hz: correladores de um bit, nível de cada tom normalizado à parte (inclinação da de-ênfase FM), diferença suavizada em meio bit
 - [x] relógio por DPLL, NRZI, HDLC (flags, bit stuffing, abort), FCS CRC-16
-- [x] AX.25 UI → formato monitor `ORIGEM>DESTINO,CAMINHO:informação`
+- [x] todas as tramas AX.25 válidas: APRS interpretado (`src/aprs_format.cpp`: posição em graus e símbolo, rumo/velocidade, altitude, meteo em unidades métricas, mensagens, estado, objetos/itens, Mic-E), outro packet em bruto (tipo de trama I/S/U, N(S)/N(R), PID, dados)
 - [x] autoteste na placa (`APRS_SELFTEST`) e modelo no PC (`tools/aprs_sim.py`)
-- [ ] validar com sinais reais do rádio (144,800 MHz)
+- [x] validado com o rádio em 144,800 MHz (digipeaters e estações meteorológicas portuguesas)
+
+### V0.11 - POCSAG
+- [x] 512 / 1200 / 2400 baud em paralelo (NRZ do discriminador: média de meio bit, DPLL fracionária)
+- [x] sincronismo com polaridade automática, batches de 16 palavras, BCH(31,21) com correção de até 2 bits
+- [x] mensagens numéricas (função 0) e alfanuméricas; RIC = endereço × 8 + frame
+- [x] filtro contra mensagens falsas (endereço com no máximo 1 bit corrigido, texto maioritariamente limpo)
+- [x] autoteste na placa (`POCSAG_SELFTEST`), incluindo 20 s só de ruído sem mensagens
+- [ ] pelo altifalante (áudio cortado a 100-300 Hz) os 512/1200 baud ficam fora de alcance: usar a saída do discriminador
+- [ ] validar com sinais reais
+
+### Interface
+- [x] LCD: separador Texto com sub-separadores por canal (ponto = texto novo; tramas/mensagens com marcador)
+- [x] LCD RX: waterfall com a altura toda; por cima, para cada canal com texto recente, o nome do modo e 4 linhas
+- [x] hora UTC em cada trama APRS e mensagem POCSAG (quando o relógio está acertado)
 
 ### V0.7 - SD Card
 - [ ] gravação de amostras
@@ -252,6 +266,8 @@ rx_analyzer/
 │   ├── rtty_decoder.h
 │   ├── psk_decoder.h
 │   ├── aprs_decoder.h
+│   ├── aprs_format.h
+│   ├── pocsag_decoder.h
 │   ├── fm_demod.h
 │   ├── fax_decoder.h
 │   ├── sstv_decoder.h
@@ -279,6 +295,8 @@ rx_analyzer/
 │   ├── rtty_decoder.cpp
 │   ├── psk_decoder.cpp
 │   ├── aprs_decoder.cpp
+│   ├── aprs_format.cpp
+│   ├── pocsag_decoder.cpp
 │   ├── fm_demod.cpp     (discriminador FM para FAX e SSTV)
 │   ├── fax_decoder.cpp
 │   ├── sstv_decoder.cpp

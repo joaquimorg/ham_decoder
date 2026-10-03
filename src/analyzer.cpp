@@ -10,6 +10,7 @@
 #include "rtty_decoder.h"
 #include "psk_decoder.h"
 #include "aprs_decoder.h"
+#include "pocsag_decoder.h"
 #include "fm_demod.h"
 #include "fax_decoder.h"
 #include "sstv_decoder.h"
@@ -18,6 +19,7 @@
 #include "classifier.h"
 #include "settings.h"
 #include "ui_hub.h"
+#include "esp_attr.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 
@@ -464,11 +466,22 @@ void report()
 
     // APRS runs all the time (packets are short bursts); a frame this second
     // names the report.
-    static char aprs_text[APRS_TEXT_MAX + 1];
+    EXT_RAM_BSS_ATTR static char aprs_text[APRS_TEXT_MAX + 1];
     if (aprs_take_text(aprs_text, sizeof(aprs_text)) > 0 && !image_on)
         snprintf(label, sizeof(label), "APRS %s", aprs_last_source());
     ui_push_text(UI_TEXT_APRS, aprs_text);
     const bool aprs_recent = aprs_last_us() && esp_timer_get_time() - aprs_last_us() < APRS_RECENT_S * 1000000LL;
+
+    // POCSAG, also all the time.
+    EXT_RAM_BSS_ATTR static char pocsag_text[POCSAG_TEXT_MAX + 1];
+    pocsag_text[0] = 0;
+    bool pocsag_recent = false;
+#if POCSAG_ENABLE
+    if (pocsag_take_text(pocsag_text, sizeof(pocsag_text)) > 0 && !image_on)
+        snprintf(label, sizeof(label), "POCSAG %d", pocsag_last_baud());
+    pocsag_recent = pocsag_last_us() && esp_timer_get_time() - pocsag_last_us() < POCSAG_RECENT_S * 1000000LL;
+#endif
+    ui_push_text(UI_TEXT_POCSAG, pocsag_text);
 #if SERIAL_REPORT >= 2
     for (char *p = rtty_text; *p; p++)
         if (*p == '\n')
@@ -516,6 +529,10 @@ void report()
     strlcpy(ws.psk_mode, psk_mode_name(), sizeof(ws.psk_mode));
     ws.aprs_frames = aprs_frames();
     ws.aprs_recent = aprs_recent;
+#if POCSAG_ENABLE
+    ws.pocsag_msgs = pocsag_messages();
+#endif
+    ws.pocsag_recent = pocsag_recent;
     strlcpy(ws.ml_label, ml_class_name(ml.cls), sizeof(ws.ml_label));
     ws.ml_prob = ml.prob;
     ui_push_status(ws);
@@ -560,11 +577,12 @@ void report()
         strlcpy(last_kind, kind, sizeof(last_kind));
         last_ml = ml.cls;
     }
-    if (cw_text[0] || rtty_text[0] || psk_text[0] || aprs_text[0]) {
+    if (cw_text[0] || rtty_text[0] || psk_text[0] || aprs_text[0] || pocsag_text[0]) {
         fputs(cw_text, stdout);
         fputs(rtty_text, stdout);
         fputs(psk_text, stdout);
         fputs(aprs_text, stdout);
+        fputs(pocsag_text, stdout);
         fflush(stdout);
     }
 #endif
@@ -607,6 +625,12 @@ void analyzer_init()
 #if APRS_SELFTEST
     aprs_selftest();
 #endif
+#if POCSAG_ENABLE
+    pocsag_init();
+#if POCSAG_SELFTEST
+    pocsag_selftest();
+#endif
+#endif
     fm_demod_init();
     fax_init();
     sstv_init();
@@ -624,6 +648,9 @@ void analyzer_process_block(const float *x, int32_t raw_peak, uint32_t overruns)
     rtty_process(x, N);
     psk_process(x, N);
     aprs_process(x, N);
+#if POCSAG_ENABLE
+    pocsag_process(x, N);
+#endif
     static float fm_hz[N], fm_mag[N];
     // Blocks dropped since the last one (analysis behind): FAX and SSTV count
     // time in samples, so they get the missing samples as a mid-grey tone

@@ -15,6 +15,7 @@
 #include "driver/i2c_master.h"
 #include "driver/ledc.h"
 #include "driver/spi_master.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
@@ -54,13 +55,15 @@ static const char *TAG = "LCD";
 #define CONTENT_H       (LCD_V_RES - STATUS_H - TABBAR_H)    // 262
 #define SPEC_H          56
 #define WF_H            (CONTENT_H - SPEC_H)    // 206: the text lines go over its bottom
-#define TEXT_TAG_W      30      // "CW" / "RT" in front of the text lines
-#define RX_LINE_ROWS    1       // RX tab: text rows per channel (1 = newest text, clipped on the left)
-#define RX_LINE_H       (RX_LINE_ROWS * 15 + 3)    // box height (font_ui_12)
+#define RX_LINE_ROWS    4       // RX tab: text rows per channel (the newest at the bottom)
+#define RX_ROW_H        15      // font_ui_12 line height
+#define RX_HEAD_H       24      // mode name above the rows (with a gap before them)
+#define RX_LINE_H       (RX_HEAD_H + RX_LINE_ROWS * RX_ROW_H + 2)    // one channel's box: 86
 #define RX_LINES        2       // at most this many channels shown on the RX tab
-#define RX_LINE_HOLD_MS 30000   // a channel's line stays this long after its last text
-#define TEXT_KEEP       300     // characters kept for the two-line view
+#define RX_LINE_HOLD_MS 120000  // a channel's lines stay this long after its last text
+#define TEXT_KEEP       500     // characters kept for the RX-tab view
 #define TEXT_TAB_LINES  25      // lines kept in the Text tab (as shown, after wrapping)
+#define TEXT_TAB_MSGS   10      // frames / messages kept in the Text tab (APRS, POCSAG)
 #define IMG_BAR_H       36      // Image tab: state + buttons under the picture
 #define IMG_BTN_H       30
 #define IMG_STOP_W      76      // buttons of the Image tab
@@ -341,15 +344,18 @@ static uint16_t *spec_buf, *wf_buf, *img_buf;
 // RX_LINE_HOLD_MS, the newest at the bottom - nothing when nothing decodes.
 struct TextChannelDef {
     UiTextChannel ch;
-    const char *name;     // Text sub-tab
-    const char *tag;      // RX tab, two letters
+    const char *name;     // Text sub-tab and RX-tab heading
     uint32_t color;
+    bool messages;        // one frame/message per line: a bullet starts each in the Text tab
 };
 static const TextChannelDef TEXT_DEFS[] = {
-    { UI_TEXT_CW, "CW", "CW", 0x9fe89f },
-    { UI_TEXT_RTTY, "RTTY", "RT", 0xf0d060 },
-    { UI_TEXT_PSK, "PSK", "PK", 0x80c8ff },
-    { UI_TEXT_APRS, "APRS", "AP", 0xff9fd0 },
+    { UI_TEXT_CW, "CW", 0x9fe89f, false },
+    { UI_TEXT_RTTY, "RTTY", 0xf0d060, false },
+    { UI_TEXT_PSK, "PSK", 0x80c8ff, false },
+    { UI_TEXT_APRS, "APRS", 0xff9fd0, true },
+#if POCSAG_ENABLE
+    { UI_TEXT_POCSAG, "POCSAG", 0xffb070, true },
+#endif
 };
 constexpr int TEXT_CH = sizeof(TEXT_DEFS) / sizeof(TEXT_DEFS[0]);
 static lv_obj_t *lbl_line[TEXT_CH], *box_line[TEXT_CH], *ta_text[TEXT_CH];
@@ -497,8 +503,9 @@ static void spectrum_event(lv_event_t *e)
 struct TextView {
     UiTextChannel ch;
     uint32_t seq;
-    char tail[TEXT_KEEP + 1];    // newest characters, line breaks flattened
+    char tail[TEXT_KEEP + 1];    // newest characters (RX tab)
     int len;
+    bool mid_line;               // the Text tab is not at the start of a line
 };
 static TextView text_views[TEXT_CH];    // .ch set from TEXT_DEFS in build_ui()
 
@@ -547,7 +554,7 @@ static void trim_lines(lv_obj_t *ta)
         return;
     lv_point_t p = { 0, (lines - TEXT_TAB_LINES) * line_h + line_h / 2 };
     const uint32_t first = lv_label_get_letter_on(lbl, &p, false);
-    static char keep[UI_TEXT_RING + 1];
+    EXT_RAM_BSS_ATTR static char keep[UI_TEXT_RING + 1];
     strlcpy(keep, lv_textarea_get_text(ta) + first, sizeof(keep));
     lv_textarea_set_text(ta, keep);
 }
@@ -581,16 +588,42 @@ static void layout_rx_lines()
         lv_obj_t *box = box_line[order[k]];
         if (!box)
             continue;
-        lv_obj_set_y(box, CONTENT_H - (k + 1) * RX_LINE_H);    // flush with the tab bar
+        lv_obj_set_y(box, CONTENT_H - (k + 1) * RX_LINE_H);    // the newest flush with the tab bar
         lv_obj_remove_flag(box, LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+// Message channels: keeps the last TEXT_TAB_MSGS frames / messages. A message
+// starts with a line that is not indented (an APRS frame has an indented
+// second line).
+static bool msg_start(const char *t, const char *p)
+{
+    return (p == t || p[-1] == '\n') && *p != ' ' && *p != '\n';
+}
+
+static void trim_messages(lv_obj_t *ta)
+{
+    const char *t = lv_textarea_get_text(ta);
+    int msgs = 0;
+    for (const char *p = t; *p; p++)
+        msgs += msg_start(t, p);
+    if (msgs <= TEXT_TAB_MSGS)
+        return;
+    const char *p = t;
+    for (int skip = msgs - TEXT_TAB_MSGS; *p; p++) {
+        if (msg_start(t, p) && skip-- == 0)
+            break;
+    }
+    EXT_RAM_BSS_ATTR static char keep[UI_TEXT_RING * 2 + 1];
+    strlcpy(keep, p, sizeof(keep));
+    lv_textarea_set_text(ta, keep);
 }
 
 static void update_text(int ch)
 {
     TextView &tv = text_views[ch];
     lv_obj_t *line_lbl = lbl_line[ch], *ta = ta_text[ch];
-    static char buf[UI_TEXT_RING + 1];
+    EXT_RAM_BSS_ATTR static char buf[UI_TEXT_RING + 1];
     const int n = ui_get_text(tv.ch, tv.seq, buf, &tv.seq);
     if (n <= 0)
         return;
@@ -602,18 +635,42 @@ static void update_text(int ch)
     }
 
     lv_textarea_set_cursor_pos(ta, LV_TEXTAREA_CURSOR_LAST);    // always append at the end
-    lv_textarea_add_text(ta, buf);
-    trim_lines(ta);
+    if (TEXT_DEFS[ch].messages) {
+        // Frames / messages: a bullet in front of each, so they stand apart.
+        EXT_RAM_BSS_ATTR static char out[UI_TEXT_RING * 2 + 1];
+        int k = 0;
+        for (int i = 0; i < n && k < (int)sizeof(out) - 5; i++) {
+            if (!tv.mid_line && buf[i] != '\n') {
+                if (buf[i] != ' ')    // indented lines continue the message above
+                    k += sprintf(out + k, LV_SYMBOL_BULLET " ");
+                tv.mid_line = true;
+            }
+            out[k++] = buf[i];
+            if (buf[i] == '\n')
+                tv.mid_line = false;
+        }
+        out[k] = 0;
+        lv_textarea_add_text(ta, out);
+        trim_messages(ta);
+    } else {
+        lv_textarea_add_text(ta, buf);
+        trim_lines(ta);
+    }
 
-    // RX tab: the label wraps and sits at the bottom of a two-line box, so
-    // the newest text shows and older lines move up out of view.
+    // RX tab: the label wraps and sits at the bottom of a box of RX_LINE_ROWS
+    // rows, so the newest text shows and older lines move up out of view.
+    // Line breaks are kept (one frame per row), repeated ones dropped.
     for (int i = 0; i < n; i++) {
         if (tv.len == TEXT_KEEP) {
             memmove(tv.tail, tv.tail + TEXT_KEEP / 3, tv.len - TEXT_KEEP / 3);
             tv.len -= TEXT_KEEP / 3;
         }
-        const char c = buf[i];
-        tv.tail[tv.len++] = c == '\n' || c == '\r' ? ' ' : c;
+        char c = buf[i];
+        if (c == '\r')
+            c = '\n';
+        if (c == '\n' && (tv.len == 0 || tv.tail[tv.len - 1] == '\n'))
+            continue;
+        tv.tail[tv.len++] = c;
     }
     tv.tail[tv.len] = 0;
     lv_label_set_text(line_lbl, tv.tail);
@@ -1317,6 +1374,7 @@ static void clear_text_event(lv_event_t *)
     TextView &tv = text_views[i];
     tv.len = 0;
     tv.tail[0] = 0;
+    tv.mid_line = false;
     lv_textarea_set_text(ta_text[i], "");
     lv_label_set_text(lbl_line[i], "");
     line_ms[i] = 0;
@@ -1389,24 +1447,28 @@ static void build_ui()
         lv_obj_set_size(box, LCD_H_RES, RX_LINE_H);
         lv_obj_remove_flag(box, LV_OBJ_FLAG_CLICKABLE);    // taps reach the waterfall
         lv_obj_add_flag(box, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_t *tag = lv_label_create(box);
-        lv_label_set_text(tag, TEXT_DEFS[i].tag);
-        lv_obj_set_style_text_font(tag, &font_ui_12, 0);    // fits the one-row box
-        lv_obj_set_style_text_color(tag, color, 0);
-        lv_obj_align(tag, LV_ALIGN_LEFT_MID, 4, 0);
-        lv_obj_t *l = lv_label_create(box);
+        // Mode name on a chip in the channel's colour (there is no bold font),
+        // the text rows below it.
+        lv_obj_t *head = lv_label_create(box);
+        lv_label_set_text(head, TEXT_DEFS[i].name);
+        lv_obj_set_style_text_font(head, &font_ui_12, 0);
+        lv_obj_set_style_text_color(head, lv_color_black(), 0);
+        lv_obj_set_style_bg_color(head, color, 0);
+        lv_obj_set_style_bg_opa(head, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_hor(head, 5, 0);
+        lv_obj_set_style_radius(head, 3, 0);
+        lv_obj_set_pos(head, 4, 3);
+        lv_obj_t *rows = plain(lv_obj_create(box));
+        lv_obj_set_style_bg_opa(rows, LV_OPA_TRANSP, 0);
+        lv_obj_remove_flag(rows, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_pos(rows, 4, RX_HEAD_H);
+        lv_obj_set_size(rows, LCD_H_RES - 8, RX_LINE_ROWS * RX_ROW_H);
+        lv_obj_t *l = lv_label_create(rows);
         lv_obj_set_style_text_font(l, &font_ui_12, 0);
         lv_obj_set_style_text_color(l, color, 0);
-        lv_obj_set_width(l, LCD_H_RES - TEXT_TAG_W - 2);
-#if RX_LINE_ROWS == 1
-        // One row: right-aligned and clipped, so the newest text is always in view.
-        lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_CLIP);
-        lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_RIGHT, 0);
-        lv_obj_align(l, LV_ALIGN_LEFT_MID, TEXT_TAG_W, 0);
-#else
+        lv_obj_set_width(l, lv_pct(100));
         lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_WRAP);
-        lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, TEXT_TAG_W, 0);
-#endif
+        lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, 0, 0);
         lv_label_set_text(l, text_views[i].tail);
         lbl_line[i] = l;
         box_line[i] = box;
@@ -1545,6 +1607,7 @@ static void rebuild_ui(void *)
         tv.seq = 0;
         tv.len = 0;
         tv.tail[0] = 0;
+        tv.mid_line = false;
     }
     ftx_count = 0;
     ftx_seq = 0;
