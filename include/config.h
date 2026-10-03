@@ -54,7 +54,7 @@
 // Input gain: analog PGA 0..10 (3 dB steps) plus ADC scale 0..7 (6 dB steps).
 // Start low and raise it until the loudest signal stays below clipping.
 #define ES8311_MIC_PGA      0
-#define ES8311_ADC_SCALE    4
+#define ES8311_ADC_SCALE    0
 
 // Monitor: the received audio (as the analyzer hears it) on the board's speaker,
 // with a volume setting (LCD and web page). Works with any audio source.
@@ -70,12 +70,12 @@
 #define MONITOR_HIGH_HZ     3500
 // Speaker noise reduction (spectral, see noise_reduce.h): attenuates the
 // background noise between and under the signal by up to this many dB.
-#define MONITOR_NR          1
+#define MONITOR_NR          0
 #define MONITOR_NR_DEPTH_DB 15.0f
 // Speaker noise gate: mutes the monitor while there is no input, so the codec's
 // noise floor is not amplified. Levels are the band-passed mean |x| in dBFS:
 // opens above GATE_OPEN, closes below GATE_CLOSE (after 150 ms). 0 = no gate.
-#define MONITOR_GATE        1
+#define MONITOR_GATE        0
 #define MONITOR_GATE_OPEN   -80.0f
 #define MONITOR_GATE_CLOSE  -84.0f
 #define MONITOR_DEFAULT_VOL 40      // %, 0 = off (amplifier disabled)
