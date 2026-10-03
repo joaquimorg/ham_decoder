@@ -1444,7 +1444,7 @@ static void build_ui()
         const lv_color_t color = lv_color_hex(TEXT_DEFS[i].color);
         lv_obj_t *box = plain(lv_obj_create(tab_rx));
         lv_obj_set_style_bg_color(box, lv_color_black(), 0);
-        lv_obj_set_style_bg_opa(box, LV_OPA_70, 0);
+        lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);    // opaque: no blending over the waterfall
         lv_obj_set_size(box, LCD_H_RES, RX_LINE_H);
         lv_obj_remove_flag(box, LV_OBJ_FLAG_CLICKABLE);    // taps reach the waterfall
         lv_obj_add_flag(box, LV_OBJ_FLAG_HIDDEN);
