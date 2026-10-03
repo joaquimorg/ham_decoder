@@ -10,7 +10,99 @@
 
 #include "es8311.h"
 
+#include <math.h>
+
 static const char *TAG = "MONITOR";
+
+// Speaker band-pass: 2nd-order high-pass plus 4th-order Butterworth low-pass.
+struct Biquad {
+    float b0, b1, b2, a1, a2;
+    float x1, x2, y1, y2;
+    float run(float x)
+    {
+        const float y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+        x2 = x1;
+        x1 = x;
+        y2 = y1;
+        y1 = y;
+        return y;
+    }
+};
+
+static Biquad bq[3];
+static int bq_n = 0;
+
+static void biquad_design(Biquad &q, bool high, float hz, float Q)
+{
+    const float w0 = 2.0f * (float)M_PI * hz / AUDIO_SAMPLE_RATE;
+    const float c = cosf(w0), alpha = sinf(w0) / (2.0f * Q), a0 = 1.0f + alpha;
+    q = {};
+    q.b0 = (high ? (1.0f + c) : (1.0f - c)) / 2.0f / a0;
+    q.b1 = (high ? -(1.0f + c) : (1.0f - c)) / a0;
+    q.b2 = q.b0;
+    q.a1 = -2.0f * c / a0;
+    q.a2 = (1.0f - alpha) / a0;
+}
+
+static void band_init()
+{
+#if MONITOR_LOW_HZ > 0
+    biquad_design(bq[bq_n++], true, MONITOR_LOW_HZ, 0.7071f);
+#endif
+#if MONITOR_HIGH_HZ > 0
+    biquad_design(bq[bq_n++], false, MONITOR_HIGH_HZ, 0.5412f);    // Butterworth 4th order
+    biquad_design(bq[bq_n++], false, MONITOR_HIGH_HZ, 1.3066f);
+#endif
+}
+
+#if MONITOR_GATE
+static float gate_env = 0.0f, gate_gain = 0.0f;
+static int gate_hold = 0;
+static bool gate_open = false;
+static volatile int gate_event = 0;    // 1 opened, 2 closed; reported by the task
+static volatile float gate_event_env = 0.0f;
+
+static inline float gate(float v)
+{
+    const float full = 8388608.0f;
+    static const float open_thr = full * powf(10.0f, MONITOR_GATE_OPEN / 20.0f);
+    static const float close_thr = full * powf(10.0f, MONITOR_GATE_CLOSE / 20.0f);
+    const float a = fabsf(v);
+    gate_env += (a > gate_env ? 0.02f : 0.0005f) * (a - gate_env);
+    if (gate_env > open_thr) {
+        if (!gate_open) {
+            gate_event = 1;
+            gate_event_env = gate_env;
+        }
+        gate_open = true;
+        gate_hold = AUDIO_SAMPLE_RATE * 150 / 1000;
+    } else if (gate_env > close_thr) {
+        if (gate_open)
+            gate_hold = AUDIO_SAMPLE_RATE * 150 / 1000;
+    } else if (gate_open && --gate_hold <= 0) {
+        gate_open = false;
+        gate_event = 2;
+        gate_event_env = gate_env;
+    }
+    gate_gain += ((gate_open ? 1.0f : 0.0f) - gate_gain) * 0.002f;    // ~10 ms ramp
+    return v * gate_gain;
+}
+#endif
+
+static inline int32_t band(int32_t x)
+{
+    float v = (float)x;
+    for (int i = 0; i < bq_n; i++)
+        v = bq[i].run(v);
+#if MONITOR_GATE
+    v = gate(v);
+#endif
+    if (v > 8388607.0f)
+        v = 8388607.0f;
+    else if (v < -8388608.0f)
+        v = -8388608.0f;
+    return (int32_t)v;
+}
 
 #define MON_BLOCK       128                 // samples per I2S write
 #define MON_BUFFER      (16 * MON_BLOCK)    // ~43 ms of queued audio at most
@@ -32,7 +124,7 @@ static void monitor_task(void *)
         if (n == 0)
             continue;    // nothing queued (monitor off): the DMA sends zeros
         for (size_t i = 0; i < n; i++)
-            stereo[2 * i] = stereo[2 * i + 1] = mono[i] << 8;    // 24 bits left-aligned
+            stereo[2 * i] = stereo[2 * i + 1] = band(mono[i]) << 8;    // 24 bits left-aligned
         size_t written;
         i2s_channel_write(es8311_tx(), stereo, n * 2 * sizeof(int32_t), &written, pdMS_TO_TICKS(100));
     }
@@ -40,8 +132,14 @@ static void monitor_task(void *)
 
 void audio_monitor_init()
 {
+    band_init();
     es8311_start();
     es8311_set_volume(volume);
+#if AUDIO_SOURCE == AUDIO_SRC_ES8311
+    // Capture and output share the I2S clocks: no queue needed (see audio_monitor_write).
+    running = volume > 0;
+    return;
+#endif
     // In PSRAM: the internal RAM is needed by the Wi-Fi buffers.
     static StaticStreamBuffer_t queue_struct;
     uint8_t *storage = (uint8_t *)heap_caps_malloc(MON_BUFFER * sizeof(int32_t) + 1, MALLOC_CAP_SPIRAM);
@@ -60,6 +158,30 @@ void audio_monitor_write(const int32_t *samples, size_t n)
 {
     if (!running)
         return;
+#if MONITOR_GATE
+    if (gate_event) {
+        const int ev = gate_event;
+        gate_event = 0;
+        ESP_LOGI(TAG, "porta %s (nivel %.0f dBFS)", ev == 1 ? "aberta" : "fechada",
+                 20.0f * log10f(gate_event_env / 8388608.0f + 1e-9f));
+    }
+#endif
+#if AUDIO_SOURCE == AUDIO_SRC_ES8311
+    // Same clock for RX and TX: writing each captured block straight to the DAC
+    // keeps the two in lock-step, so nothing is dropped or starved. A queue
+    // between them dropped samples whenever it filled up (audible hiccups).
+    static int32_t stereo[256 * 2];
+    while (n) {
+        const size_t m = n < 256 ? n : 256;
+        for (size_t i = 0; i < m; i++)
+            stereo[2 * i] = stereo[2 * i + 1] = band(samples[i]) << 8;
+        size_t written;
+        i2s_channel_write(es8311_tx(), stereo, m * 2 * sizeof(int32_t), &written, pdMS_TO_TICKS(20));
+        samples += m;
+        n -= m;
+    }
+    return;
+#endif
     xStreamBufferSend(queue, samples, n * sizeof(int32_t), 0);
 }
 
@@ -70,7 +192,11 @@ void audio_monitor_set_volume(int percent)
         return;
     volume = percent;
     es8311_set_volume(volume);
+#if AUDIO_SOURCE == AUDIO_SRC_ES8311
+    running = volume > 0;
+#else
     running = queue && volume > 0;
+#endif
 }
 
 #endif

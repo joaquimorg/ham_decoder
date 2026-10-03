@@ -836,6 +836,7 @@ static void http_start()
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.stack_size = 8192;
+    cfg.task_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;    // the internal RAM is needed by the audio DMA and Wi-Fi
     cfg.core_id = 0;    // keep off the audio/analysis core
     // Browsers keep connections open; without LRU purge the few sockets run
     // out after a while and requests hang (the page froze after minutes).
@@ -851,7 +852,12 @@ static void http_start()
     cfg.keep_alive_idle = 5;
     cfg.keep_alive_interval = 2;
     cfg.keep_alive_count = 3;
-    ESP_ERROR_CHECK(httpd_start(&server, &cfg));
+    const esp_err_t err = httpd_start(&server, &cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "httpd_start: %s (RAM interna livre %u B); sem pagina web",
+                 esp_err_to_name(err), (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        return;
+    }
 
     register_uri("/",           HTTP_GET,  handle_page);
     register_uri("/api/data",   HTTP_GET,  handle_data);

@@ -19,6 +19,9 @@ bool es8311_start();
 i2s_chan_handle_t es8311_rx();    // nullptr unless the codec is the audio source
 i2s_chan_handle_t es8311_tx();    // nullptr unless AUDIO_MONITOR
 
+// Receive-DMA overflows (audio lost) since the last call.
+uint32_t es8311_take_rx_overflows();
+
 // Monitor volume, 0..100 %: 0 mutes the DAC and switches the speaker amplifier
 // off. May be called before es8311_start(); it is applied once the codec is up.
 void es8311_set_volume(int percent);

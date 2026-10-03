@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 
+
 #include "freertos/FreeRTOS.h"
 #include "esp_err.h"
 #include "esp_log.h"
@@ -29,7 +30,13 @@ void audio_source_init()
         i2s_channel_read(es8311_rx(), discard, sizeof(discard), &bytes, portMAX_DELAY);
 }
 
-void audio_source_log() {}
+void audio_source_log()
+{
+    const uint32_t ovf = es8311_take_rx_overflows();
+    if (ovf)
+        ESP_LOGW(TAG, "DMA overflow (audio perdido): %u buffers, ~%u ms", (unsigned)ovf,
+                 (unsigned)(ovf * 128 * 1000 / AUDIO_SAMPLE_RATE));
+}
 
 size_t audio_source_read(int32_t *out, size_t max)
 {
@@ -45,8 +52,17 @@ size_t audio_source_read(int32_t *out, size_t max)
     size_t n = bytes / (2 * sizeof(int32_t));
     if (n > max)
         n = max;
-    for (size_t i = 0; i < n; i++)
-        out[i] = frames[2 * i + ES8311_CHANNEL] >> 8;    // 24-bit audio left-aligned in the slot
+    // The codec delivers a strong tone at fs/2 (picked up on the analog input,
+    // it grows with the input gain). It is inaudible but beats with its image in
+    // the DAC and shows up as a fast tremolo on the speaker, and it aliases in
+    // the analysis. [1 2 1]/4 has a zero at fs/2 and costs < 0.2 dB below 3 kHz.
+    static int32_t h1 = 0, h2 = 0;
+    for (size_t i = 0; i < n; i++) {
+        const int32_t x = frames[2 * i + ES8311_CHANNEL] >> 8;    // 24-bit audio left-aligned in the slot
+        out[i] = (x + 2 * h1 + h2) >> 2;
+        h2 = h1;
+        h1 = x;
+    }
     return n;
 }
 

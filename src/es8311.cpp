@@ -13,7 +13,8 @@
 static const char *TAG = "ES8311";
 
 // 128 frames of 32-bit stereo per DMA buffer, 6 buffers (~16 ms) per direction:
-// 6 KB each, from the internal RAM that the Wi-Fi buffers also need.
+// 6 KB each, from the internal RAM that the Wi-Fi buffers also need (the DMA
+// descriptors cannot live in the PSRAM).
 #define ES_DMA_FRAMES   128
 #define ES_DMA_DESC     6
 
@@ -51,6 +52,21 @@ static i2c_master_dev_handle_t codec = nullptr;
 static bool started = false;
 static bool codec_ok = false;
 static int volume_pct = MONITOR_DEFAULT_VOL;
+
+static volatile uint32_t rx_overflows = 0;
+
+static bool IRAM_ATTR on_recv_overflow(i2s_chan_handle_t, i2s_event_data_t *, void *)
+{
+    rx_overflows = rx_overflows + 1;
+    return false;
+}
+
+uint32_t es8311_take_rx_overflows()
+{
+    const uint32_t n = rx_overflows;
+    rx_overflows = 0;
+    return n;
+}
 
 i2s_chan_handle_t es8311_rx() { return rx_handle; }
 i2s_chan_handle_t es8311_tx() { return tx_handle; }
@@ -120,6 +136,11 @@ static bool codec_init()
     vTaskDelay(pdMS_TO_TICKS(20));
     e |= wr(REG_RESET, 0x00);
     e |= wr(REG_RESET, 0x80);               // power on, slave
+    e |= wr(0x44, 0x08);                    // ignore I2C glitches
+    e |= wr(0x0B, 0x00);                    // power-up sequence of the analog blocks
+    e |= wr(0x0C, 0x00);
+    e |= wr(0x10, 0x1F);                    // bias / reference of the ADC and DAC
+    e |= wr(0x11, 0x7F);
     e |= wr(REG_CLK1, 0x3F);                // all clocks on, MCLK from the pin
 
     // 12.288 MHz MCLK, 48 kHz: pre_div 1, pre_mult 1, adc/dac div 1, OSR 0x10,
@@ -189,7 +210,11 @@ bool es8311_start()
     ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, tx, rx));
 
     i2s_std_config_t std_cfg = {
+#if ES8311_MCLK_INTEGER_DIV
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(48077),
+#else
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_SAMPLE_RATE),
+#endif
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = (gpio_num_t)ES8311_MCLK_GPIO,
@@ -212,10 +237,23 @@ bool es8311_start()
         std_cfg.gpio_cfg.dout = (gpio_num_t)ES8311_DOUT_GPIO;
         ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle, &std_cfg));
     }
-    if (rx_handle)
+    if (rx_handle) {
+        i2s_event_callbacks_t cbs = {};
+        cbs.on_recv_q_ovf = on_recv_overflow;
+        ESP_ERROR_CHECK(i2s_channel_register_event_callback(rx_handle, &cbs, nullptr));
         ESP_ERROR_CHECK(i2s_channel_enable(rx_handle));
+    }
     if (tx_handle)
         ESP_ERROR_CHECK(i2s_channel_enable(tx_handle));
+
+    // Headroom for the output: the monitor writes in lock-step with the capture,
+    // so a late capture block would otherwise leave the DMA empty (audible gap).
+    if (tx_handle) {
+        static int32_t silence[ES_DMA_FRAMES * 2];
+        size_t w;
+        for (int i = 0; i < ES_DMA_DESC / 2; i++)
+            i2s_channel_write(tx_handle, silence, sizeof(silence), &w, pdMS_TO_TICKS(50));
+    }
 
     // The codec needs MCLK running while its registers are written.
     vTaskDelay(pdMS_TO_TICKS(10));

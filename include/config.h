@@ -50,11 +50,15 @@
 #define ES8311_DIN_GPIO     6       // codec ADC -> ESP
 #define ES8311_DOUT_GPIO    8       // ESP -> codec DAC
 #define ES8311_PA_GPIO      1       // SC8002B enable, active low (pull-up = off)
+// 1 = MCLK from an integer divider (160 MHz / 13 = 12.3077 MHz, Fs = 48077 Hz):
+//     the ESP32-S3 has no audio PLL and the fractional divider for 12.288 MHz
+//     puts periodic jitter on the codec's sampling clock.
+#define ES8311_MCLK_INTEGER_DIV 0
 #define ES8311_CHANNEL      0       // slot read from the codec: 0 = left, 1 = right
 // Input gain: analog PGA 0..10 (3 dB steps) plus ADC scale 0..7 (6 dB steps).
 // Start low and raise it until the loudest signal stays below clipping.
 #define ES8311_MIC_PGA      0
-#define ES8311_ADC_SCALE    0
+#define ES8311_ADC_SCALE    3
 
 // Monitor: the received audio (as the analyzer hears it) on the board's speaker,
 // with a volume setting (LCD and web page). Works with any audio source.
@@ -63,6 +67,17 @@
 #else
 #define AUDIO_MONITOR       0
 #endif
+// Speaker band (Hz): the monitor plays a band-pass of the received audio. The
+// speaker leaks back into the codec input; above the voice band that loop adds
+// noise and a fast tremolo. 0 disables a corner.
+#define MONITOR_LOW_HZ      200
+#define MONITOR_HIGH_HZ     3500
+// Speaker noise gate: mutes the monitor while there is no input, so the codec's
+// noise floor is not amplified. Levels are the band-passed mean |x| in dBFS:
+// opens above GATE_OPEN, closes below GATE_CLOSE (after 150 ms). 0 = no gate.
+#define MONITOR_GATE        1
+#define MONITOR_GATE_OPEN   -80.0f
+#define MONITOR_GATE_CLOSE  -84.0f
 #define MONITOR_DEFAULT_VOL 40      // %, 0 = off (amplifier disabled)
 
 // PCM1808 over I2S: ESP32 master (MCLK 256 fs), PCM1808 slave
