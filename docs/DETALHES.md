@@ -229,11 +229,24 @@ Para juntar exemplos reais: `ML_LOG_FEATURES 1` e `ML_LOG_LABEL "CW"` em `config
 - [ ] pelo altifalante (áudio cortado a 100-300 Hz) os 512/1200 baud ficam fora de alcance: usar a saída do discriminador
 - [ ] validar com sinais reais
 
+### V0.14 - NAVTEX
+- [x] SITOR-B: FSK de 100 baud nos tons da análise (desvio de 140-200 Hz), correladores de 1 bit com nível por tom, DPLL
+- [x] CCIR 476 (4 marcas em 7 bits), alinhamento entre as 14 fases do par alpha/rep (caracteres válidos, cópia 35 bits antes, fase alpha/rep), polaridade pela melhor fase alinhada
+- [x] FEC: o carácter principal danificado é substituído pela repetição; "_" quando as duas cópias falham
+- [x] prioridade sobre o RTTY quando sincronizado; autoteste (`NAVTEX_SELFTEST`): limpo, invertido com ruído e 4 Hz, 6 caracteres danificados
+- [ ] validar com sinais reais (518 kHz)
+
+### V0.15 - Feld-Hell
+- [x] tom (CW manual ou pico mais forte) para banda base, média de 1 píxel, 245 píxeis/s com AGC, colunas de 14 níveis para a interface (`ui_push_hell_column`)
+- [x] LCD: sub-separador HELL com 3 faixas, cada coluna desenhada duas vezes (sem sincronismo), só a zona nova é redesenhada; página web: tela equivalente
+- [x] autoteste (`HELL_SELFTEST`): padrão aleatório de píxeis com ruído, 100% certo
+- [ ] validar com sinais reais
+
 ### V0.12 - DTMF / CTCSS
 - [x] DTMF: Goertzel nas 8 frequências em blocos de 25 ms, par linha/coluna com a maior parte da energia, twist e restantes tons verificados, dígito aceite em 2 blocos; uma linha por sequência
 - [x] CTCSS: 50 subtons, passa-baixo a 300 Hz e 1 kHz, Goertzel com janela de Hann de 1 s a cada 0,5 s (resolução de 1 Hz), tom aceite em 2 janelas
 - [x] autoteste na placa (`TONES_SELFTEST`): sequência DTMF com twist e ruído, voz sem falsos dígitos, CTCSS 88,5 e 250,3 Hz junto dos vizinhos, só ruído
-- [ ] DCS (código digital de 134,4 bit/s)
+- [x] DCS: palavra Golay de 23 bits a 134,4 bit/s (DPLL, as duas polaridades), aceite quando se repete 3 vezes com 23 bits de intervalo; os códigos equivalentes da mesma palavra aparecem juntos (ex.: 023N = 047I)
 - [ ] validar com sinais reais
 
 ### Interface
@@ -276,6 +289,8 @@ rx_analyzer/
 │   ├── aprs_format.h
 │   ├── pocsag_decoder.h
 │   ├── tone_decoder.h
+│   ├── navtex_decoder.h
+│   ├── hell_decoder.h
 │   ├── fm_demod.h
 │   ├── fax_decoder.h
 │   ├── sstv_decoder.h
@@ -306,6 +321,8 @@ rx_analyzer/
 │   ├── aprs_format.cpp
 │   ├── pocsag_decoder.cpp
 │   ├── tone_decoder.cpp
+│   ├── navtex_decoder.cpp
+│   ├── hell_decoder.cpp
 │   ├── fm_demod.cpp     (discriminador FM para FAX e SSTV)
 │   ├── fax_decoder.cpp
 │   ├── sstv_decoder.cpp

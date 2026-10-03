@@ -26,7 +26,10 @@ struct TextRing {
     char buf[UI_TEXT_RING];
     uint32_t seq = 0;           // number of characters ever pushed
 };
-static TextRing texts[UI_TEXT_COUNT];    // UiTextChannel: CW, RTTY, PSK, APRS, POCSAG, DTMF/CTCSS
+EXT_RAM_BSS_ATTR static TextRing texts[UI_TEXT_COUNT];    // UiTextChannel: CW, RTTY, PSK, APRS, POCSAG, DTMF/CTCSS, NAVTEX
+
+EXT_RAM_BSS_ATTR static uint8_t hell_cols[UI_HELL_RING][UI_HELL_ROWS];
+static uint32_t hell_seq = 0;
 
 static UiStatus status;
 static volatile float analysis_load = 0.0f;
@@ -63,6 +66,31 @@ void ui_push_spectrum(const uint8_t *row)
     memcpy(rows[row_seq % ROWS], row, UI_BINS);
     row_seq++;
     xSemaphoreGive(lock);
+}
+
+void ui_push_hell_column(const uint8_t *col)
+{
+    if (!lock)
+        return;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    memcpy(hell_cols[hell_seq % UI_HELL_RING], col, UI_HELL_ROWS);
+    hell_seq++;
+    xSemaphoreGive(lock);
+}
+
+int ui_get_hell(uint32_t from, uint8_t (*out)[UI_HELL_ROWS], int max, uint32_t *next)
+{
+    if (max > UI_HELL_RING)
+        max = UI_HELL_RING;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    if (from > hell_seq || hell_seq - from > (uint32_t)max)
+        from = hell_seq > (uint32_t)max ? hell_seq - max : 0;
+    const int n = hell_seq - from;
+    for (int i = 0; i < n; i++)
+        memcpy(out[i], hell_cols[(from + i) % UI_HELL_RING], UI_HELL_ROWS);
+    *next = hell_seq;
+    xSemaphoreGive(lock);
+    return n;
 }
 
 void ui_push_status(const UiStatus &st)

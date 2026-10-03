@@ -314,13 +314,17 @@ struct Snapshot {
     int nrows;
     uint8_t rows[ROWS][UI_BINS];
     char text[UI_TEXT_COUNT][TEXT_RING + 1];
+    uint32_t hseq;                    // after these Hell columns
+    int nhell;
+    uint8_t hell[64][UI_HELL_ROWS];
     UiStatus st;
 };
 EXT_RAM_BSS_ATTR static Snapshot snap;    // used only from the HTTP server task
 
 // A new client (want_row 0) starts with the last 16 rows.
-static void take_snapshot(uint32_t want_row, const uint32_t *want_text)
+static void take_snapshot(uint32_t want_row, const uint32_t *want_text, uint32_t want_hell)
 {
+    snap.nhell = ui_get_hell(want_hell, snap.hell, 64, &snap.hseq);
     snap.nrows = ui_get_rows(want_row, snap.rows, want_row ? ROWS : 16, &snap.rseq);
     for (int c = 0; c < UI_TEXT_COUNT; c++)
         ui_get_text((UiTextChannel)c, want_text[c], snap.text[c], &snap.tseq[c]);
@@ -344,6 +348,13 @@ static int format_json(bool with_rows, char *json, size_t cap)
         n += json_str(json + n, cap - n, snap.text[c]);
     }
     n += snprintf(json + n, cap - n, "]");
+    // Hell columns since the last poll, base64 (UI_HELL_ROWS bytes each).
+    n += snprintf(json + n, cap - n, ",\"hs\":%" PRIu32 ",\"hl\":\"", snap.hseq);
+    if (snap.nhell > 0 && cap - n > (size_t)(snap.nhell * UI_HELL_ROWS / 3 * 4 + 16)) {
+        base64_encode(&snap.hell[0][0], snap.nhell * UI_HELL_ROWS, json + n);
+        n += strlen(json + n);
+    }
+    n += snprintf(json + n, cap - n, "\"");
     if (with_rows) {
         n += snprintf(json + n, cap - n, ",\"rows\":[");
         for (int i = 0; i < snap.nrows; i++) {
@@ -353,9 +364,11 @@ static int format_json(bool with_rows, char *json, size_t cap)
         }
         n += snprintf(json + n, cap - n, "]");
     }
+    n += snprintf(json + n, cap - n, ",\"navtex_on\":%s", st.navtex_active ? "true" : "false");
     n += snprintf(json + n, cap - n, ",\"aprs_n\":%" PRIu32 ",\"aprs_on\":%s", st.aprs_frames,
                   st.aprs_recent ? "true" : "false");
-    n += snprintf(json + n, cap - n, ",\"ctcss\":%.1f", st.ctcss_hz);
+    n += snprintf(json + n, cap - n, ",\"ctcss\":%.1f,\"dcs\":%d,\"dcs_inv\":%s", st.ctcss_hz, st.dcs_code,
+                  st.dcs_inv ? "true" : "false");
     n += snprintf(json + n, cap - n, ",\"pocsag\":%s,\"pg_n\":%" PRIu32 ",\"pg_on\":%s",
                   POCSAG_ENABLE ? "true" : "false", st.pocsag_msgs, st.pocsag_recent ? "true" : "false");
     n += snprintf(json + n, cap - n, ",\"psk_hz\":%.1f,\"psk_on\":%s,\"psk_mode\":", st.psk_hz,
@@ -415,11 +428,13 @@ EXT_RAM_BSS_ATTR static char json_buf[36 * 1024];    // HTTP server task only (P
 // Polling fallback for browsers where the WebSocket does not work.
 static esp_err_t handle_data(httpd_req_t *req)
 {
-    uint32_t want_row = 0, want_text[UI_TEXT_COUNT] = {};
+    uint32_t want_row = 0, want_text[UI_TEXT_COUNT] = {}, want_hell = 0;
     char q[160], v[120];
     if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK) {
         if (httpd_query_key_value(q, "r", v, sizeof(v)) == ESP_OK)
             want_row = strtoul(v, nullptr, 10);
+        if (httpd_query_key_value(q, "h", v, sizeof(v)) == ESP_OK)
+            want_hell = strtoul(v, nullptr, 10);
         if (httpd_query_key_value(q, "s", v, sizeof(v)) == ESP_OK) {
             const char *p = v;
             for (int c = 0; c < UI_TEXT_COUNT && *p; c++) {
@@ -430,7 +445,7 @@ static esp_err_t handle_data(httpd_req_t *req)
         }
     }
     const int64_t t0 = esp_timer_get_time();
-    take_snapshot(want_row, want_text);
+    take_snapshot(want_row, want_text, want_hell);
     const int n = format_json(true, json_buf, sizeof(json_buf));
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -597,6 +612,7 @@ struct WsClient {
     int fd;
     uint32_t row;             // next sequence numbers this client needs: rows,
     uint32_t text[UI_TEXT_COUNT];    // text of each channel
+    uint32_t hell;            // Hell columns
     int64_t last_status_us;   // status JSON goes out once a second (or with new text)
 };
 static WsClient ws_clients[WS_MAX_CLIENTS];
@@ -693,7 +709,7 @@ static void ws_push_work(void *)
     for (WsClient &c : ws_clients) {
         if (!c.used)
             continue;
-        take_snapshot(c.row, c.text);
+        take_snapshot(c.row, c.text, c.hell);
 
         httpd_ws_frame_t f = {};
         esp_err_t err = ESP_OK;
@@ -708,7 +724,7 @@ static void ws_push_work(void *)
             err = httpd_ws_send_frame_async(server, c.fd, &f);
         }
         const int64_t now = esp_timer_get_time();
-        bool new_text = false;
+        bool new_text = snap.hseq != c.hell;
         for (int k = 0; k < UI_TEXT_COUNT; k++)
             new_text |= snap.tseq[k] != c.text[k];
         const bool send_status = new_text || now - c.last_status_us >= WS_STATUS_US;
@@ -733,6 +749,7 @@ static void ws_push_work(void *)
         c.row = snap.rseq;
         if (send_status) {
             memcpy(c.text, snap.tseq, sizeof(c.text));
+            c.hell = snap.hseq;
         }
     }
     ws_push_pending = false;

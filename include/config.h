@@ -191,6 +191,14 @@
 #define POCSAG_RECENT_S     10      // "POCSAG" shown as live this long after a message
 #define POCSAG_SELFTEST     0       // 1 = decode generated transmissions at boot and log the result
 
+// NAVTEX / SITOR-B (navtex_decoder.h): 100 baud, 170 Hz shift.
+#define NAVTEX_TEXT_MAX     256     // decoded characters buffered per report
+#define NAVTEX_SELFTEST     0       // 1 = decode a generated transmission at boot and log the result
+
+// Feld-Hell (hell_decoder.h): columns for the interfaces, on the manual CW
+// tone or the strongest peak.
+#define HELL_SELFTEST       0       // 1 = check a generated pixel pattern at boot and log the result
+
 // DTMF and CTCSS (tone_decoder.h).
 #define TONES_TEXT_MAX      512     // text buffered per report
 #define TONES_SELFTEST      0       // 1 = decode generated tones at boot and log the result

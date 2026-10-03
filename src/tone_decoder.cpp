@@ -81,6 +81,63 @@ int ct_cand = -1;         // tone of the last window
 int ct_now = -1;          // tone held (reported)
 int ct_misses = 0;
 
+// ---------------------------------------------------------------------------
+// DCS
+
+constexpr float DCS_BAUD = 134.4f;
+constexpr float DCS_PLL_GAIN = 0.15f;
+constexpr int DCS_REPS = 3;              // the word repeated this many times, 23 bits apart
+constexpr int DCS_LOST_BITS = 3 * 23;    // no valid word this long: released
+// Standard codes (octal), as radios list them.
+const uint16_t DCS_STD[] = {
+    0023, 0025, 0026, 0031, 0032, 0036, 0043, 0047, 0051, 0053, 0054, 0065, 0071, 0072, 0073, 0074, 0112, 0114,
+    0115, 0116, 0122, 0125, 0131, 0132, 0134, 0143, 0145, 0152, 0155, 0156, 0162, 0165, 0172, 0174, 0205, 0212,
+    0223, 0225, 0226, 0243, 0244, 0245, 0246, 0251, 0252, 0255, 0261, 0263, 0265, 0266, 0271, 0274, 0306, 0311,
+    0315, 0325, 0331, 0332, 0343, 0346, 0351, 0356, 0364, 0365, 0371, 0411, 0412, 0413, 0423, 0431, 0432, 0445,
+    0446, 0452, 0454, 0455, 0462, 0464, 0465, 0466, 0503, 0506, 0516, 0523, 0526, 0532, 0546, 0565, 0606, 0612,
+    0624, 0627, 0631, 0632, 0654, 0662, 0664, 0703, 0712, 0723, 0731, 0732, 0734, 0743, 0754,
+};
+
+// The 11 Golay parity bits of a 9-bit code (C0..C8), as documented for DCS.
+uint32_t dcs_parity(uint32_t c)
+{
+    auto par = [](uint32_t v) { return (uint32_t)__builtin_parity(v); };
+    uint32_t p = 0;
+    p |= par(c & 0b010011111) << 0;
+    p |= (par(c & 0b100111110) ^ 1) << 1;
+    p |= par(c & 0b011100011) << 2;
+    p |= (par(c & 0b111000110) ^ 1) << 3;
+    p |= (par(c & 0b100010011) ^ 1) << 4;
+    p |= (par(c & 0b010111001) ^ 1) << 5;
+    p |= par(c & 0b111101101) << 6;
+    p |= par(c & 0b111011010) << 7;
+    p |= par(c & 0b110110100) << 8;
+    p |= (par(c & 0b101101000) ^ 1) << 9;
+    p |= (par(c & 0b001001111) ^ 1) << 10;
+    return p;
+}
+
+// Word bits in transmission order from bit 0: C0..C8, filler 0 0 1, P0..P10.
+uint32_t dcs_word(uint32_t code) { return code | 4u << 9 | dcs_parity(code) << 12; }
+
+bool dcs_standard(uint32_t code)
+{
+    for (uint16_t c : DCS_STD)
+        if (c == code)
+            return true;
+    return false;
+}
+
+struct DcsCand { int code = -1; bool inv = false; uint32_t last = 0; int reps = 0; };
+DcsCand dcs_cand[4];
+float dcs_phase = 0.0f, dcs_mean = 0.0f;
+bool dcs_prev = false;
+uint32_t dcs_sr = 0, dcs_bits = 0, dcs_last_valid = 0;
+int dcs_now = -1;
+bool dcs_now_inv = false;
+char dcs_pending[48] = "", dcs_reported[48] = "";
+uint32_t dcs_pending_since = 0;
+
 EXT_RAM_BSS_ATTR char text[TONES_TEXT_MAX];
 size_t text_len = 0;
 
@@ -222,6 +279,91 @@ void ctcss_window()
     ct_cand = cand;
 }
 
+void dcs_bit(int b)
+{
+    dcs_sr = (dcs_sr >> 1) | (uint32_t)b << 22;    // bit 0 = oldest
+    dcs_bits++;
+    for (int inv = 0; inv < 2; inv++) {
+        const uint32_t w = inv ? (~dcs_sr & 0x7FFFFF) : dcs_sr;
+        const uint32_t code = w & 0x1FF;
+        if (w != dcs_word(code) || !dcs_standard(code))
+            continue;
+        dcs_last_valid = dcs_bits;
+        DcsCand *c = nullptr;
+        for (DcsCand &k : dcs_cand)
+            if (k.code == (int)code && k.inv == (bool)inv)
+                c = &k;
+        if (!c) {    // replace the stalest
+            c = &dcs_cand[0];
+            for (DcsCand &k : dcs_cand)
+                if (k.code < 0 || k.last < c->last)
+                    c = &k;
+            c->code = (int)code;
+            c->inv = inv;
+            c->reps = 0;
+            c->last = 0;
+        }
+        c->reps = (c->last && dcs_bits - c->last == 23) ? c->reps + 1 : 1;
+        c->last = dcs_bits;
+    }
+    // Every standard code holding DCS_REPS repetitions: a word and its
+    // rotations or inverse can be several codes at once (e.g. 754I = 116N,
+    // the same signal), so they are listed together, N first, once the set has
+    // held for two words.
+    DcsCand act[4];
+    int na = 0;
+    for (const DcsCand &k : dcs_cand)
+        if (k.code >= 0 && k.reps >= DCS_REPS && dcs_bits - k.last < 2 * 23)
+            act[na++] = k;
+    for (int i = 1; i < na; i++) {
+        const DcsCand v = act[i];
+        int j = i - 1;
+        while (j >= 0 && (act[j].inv > v.inv || (act[j].inv == v.inv && act[j].code > v.code))) {
+            act[j + 1] = act[j];
+            j--;
+        }
+        act[j + 1] = v;
+    }
+    char key[48] = "";
+    int k = 0;
+    for (int i = 0; i < na; i++)
+        k += snprintf(key + k, sizeof(key) - k, "%s%03o%c", i ? " = " : "", act[i].code, act[i].inv ? 'I' : 'N');
+    if (strcmp(key, dcs_pending)) {
+        strlcpy(dcs_pending, key, sizeof(dcs_pending));
+        dcs_pending_since = dcs_bits;
+    }
+    if (na > 0 && dcs_bits - dcs_pending_since >= 2 * 23 && strcmp(key, dcs_reported)) {
+        append_stamp();
+        append("DCS ");
+        append(key);
+        append("\n");
+        strlcpy(dcs_reported, key, sizeof(dcs_reported));
+        dcs_now = act[0].code;
+        dcs_now_inv = act[0].inv;
+    } else if (dcs_now >= 0 && dcs_bits - dcs_last_valid > DCS_LOST_BITS) {
+        dcs_now = -1;
+        dcs_reported[0] = 0;
+        for (DcsCand &c : dcs_cand)
+            c = DcsCand();
+    }
+}
+
+// One sample of the 1 kHz low-passed copy.
+void dcs_sample(float v)
+{
+    dcs_mean += 0.002f * (v - dcs_mean);    // DC, ~0.5 s
+    const bool level = v - dcs_mean > 0.0f;
+    dcs_phase += DCS_BAUD / 1000.0f;
+    if (level != dcs_prev) {
+        dcs_phase += (0.5f - dcs_phase) * DCS_PLL_GAIN;    // a transition belongs half-way between samples
+        dcs_prev = level;
+    }
+    if (dcs_phase >= 1.0f) {
+        dcs_phase -= 1.0f;
+        dcs_bit(level ? 1 : 0);
+    }
+}
+
 }    // namespace
 
 void tones_init()
@@ -257,6 +399,7 @@ void tones_process(const float *x, int n)
         ct_acc += ct_lp[1].run(ct_lp[0].run(v));
         if (++ct_phase == CT_DECIM) {
             ct_ring[ct_pos] = ct_acc / CT_DECIM;
+            dcs_sample(ct_ring[ct_pos]);
             ct_acc = 0.0f;
             ct_phase = 0;
             if (++ct_pos == CT_N)
@@ -281,6 +424,8 @@ size_t tones_take_text(char *buf, size_t size)
 }
 
 float ctcss_hz() { return ct_now >= 0 ? CT_HZ[ct_now] : 0.0f; }
+int dcs_code() { return dcs_now; }
+bool dcs_inverted() { return dcs_now_inv; }
 const char *dtmf_last() { return dtmf_seq; }
 int64_t dtmf_last_us() { return dtmf_last_t; }
 
@@ -391,6 +536,29 @@ void tones_selftest()
         const bool seen = strstr(got, "CTCSS 250.3 Hz") != nullptr;
         run(2.0f, [](float) { return noise(0.01f); }, got, sizeof(got));
         log_result("CTCSS 250.3 e silencio", got, seen && ctcss_hz() == 0.0f);
+    }
+    // DCS 023 (normal) and 754 (inverted) under a 1 kHz tone, then silence.
+    {
+        struct DcsTest { uint32_t code; bool inv; const char *expect; };
+        static const DcsTest TESTS[] = { { 0023, false, "DCS 023N" }, { 0754, true, "DCS 116N = 754I" } };
+        for (const DcsTest &dt : TESTS) {
+            static uint32_t word;
+            static bool inv;
+            word = dcs_word(dt.code);
+            inv = dt.inv;
+            char got[256] = "";
+            run(
+                4.0f,
+                [](float t) {
+                    const int bit = (int)(t * DCS_BAUD) % 23;
+                    const int b = ((word >> bit) & 1) ^ (inv ? 1 : 0);
+                    return (b ? 0.05f : -0.05f) + 0.2f * sinf(2.0f * (float)M_PI * 1000.0f * t) + noise(0.01f);
+                },
+                got, sizeof(got));
+            const bool seen = strstr(got, dt.expect) != nullptr;
+            run(2.0f, [](float) { return noise(0.01f); }, got, sizeof(got));
+            log_result(dt.expect, got, seen && dcs_code() < 0);
+        }
     }
     // Noise only: nothing at all.
     {
