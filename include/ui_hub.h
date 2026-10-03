@@ -34,11 +34,12 @@ struct UiStatus {
     bool aprs_recent;       // a frame in the last APRS_RECENT_S seconds
     uint32_t pocsag_msgs;   // POCSAG messages since boot
     bool pocsag_recent;     // a message in the last POCSAG_RECENT_S seconds
+    float ctcss_hz;         // CTCSS tone present, 0 = none
     char ml_label[8];       // TinyML classifier
     float ml_prob;
 };
 
-enum UiTextChannel { UI_TEXT_CW = 0, UI_TEXT_RTTY = 1, UI_TEXT_PSK = 2, UI_TEXT_APRS = 3, UI_TEXT_POCSAG = 4, UI_TEXT_COUNT };
+enum UiTextChannel { UI_TEXT_CW = 0, UI_TEXT_RTTY = 1, UI_TEXT_PSK = 2, UI_TEXT_APRS = 3, UI_TEXT_POCSAG = 4, UI_TEXT_TONES = 5, UI_TEXT_COUNT };
 
 // Creates the shared state. Call before any producer runs.
 void ui_hub_init();

@@ -355,6 +355,7 @@ static int format_json(bool with_rows, char *json, size_t cap)
     }
     n += snprintf(json + n, cap - n, ",\"aprs_n\":%" PRIu32 ",\"aprs_on\":%s", st.aprs_frames,
                   st.aprs_recent ? "true" : "false");
+    n += snprintf(json + n, cap - n, ",\"ctcss\":%.1f", st.ctcss_hz);
     n += snprintf(json + n, cap - n, ",\"pocsag\":%s,\"pg_n\":%" PRIu32 ",\"pg_on\":%s",
                   POCSAG_ENABLE ? "true" : "false", st.pocsag_msgs, st.pocsag_recent ? "true" : "false");
     n += snprintf(json + n, cap - n, ",\"psk_hz\":%.1f,\"psk_on\":%s,\"psk_mode\":", st.psk_hz,

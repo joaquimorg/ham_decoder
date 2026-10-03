@@ -143,6 +143,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       <div class="metric"><div class="k">PSK</div><div class="v" id="psk">-</div></div>
       <div class="metric"><div class="k">APRS</div><div class="v" id="aprs">-</div></div>
       <div class="metric" id="pgMetric"><div class="k">POCSAG</div><div class="v" id="pg">-</div></div>
+      <div class="metric"><div class="k">CTCSS</div><div class="v" id="ctcss">-</div></div>
     </div>
   </section>
 
@@ -166,6 +167,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     <button data-tab="psk">PSK</button>
     <button data-tab="aprs">APRS</button>
     <button data-tab="pocsag" id="pgTab">POCSAG</button>
+    <button data-tab="tones">DTMF / CTCSS</button>
     <button data-tab="ftx">FT8 / FT4</button>
     <button data-tab="img">FAX / SSTV</button>
     <button data-tab="cfg">Definições</button>
@@ -280,6 +282,20 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     </section>
   </div>
 
+  <div class="pane" data-pane="tones">
+    <section class="card">
+      <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+        <h2 style="margin: 0">DTMF / CTCSS</h2>
+        <div class="row">
+          <button id="dcopy">Copiar</button>
+          <button id="dclear">Limpar</button>
+        </div>
+      </div>
+      <pre class="decoded" id="dtext"></pre>
+      <div class="note" style="margin-top: 8px">Sequências DTMF (uma por linha) e os subtons CTCSS detetados (67,0 a 254,1 Hz). O CTCSS precisa do áudio abaixo de 300 Hz: saída de linha ou do discriminador, que muitos rádios cortam no altifalante.</div>
+    </section>
+  </div>
+
   <div class="pane" data-pane="ftx">
     <section class="card">
       <div class="row" style="justify-content: space-between; margin-bottom: 10px">
@@ -391,9 +407,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   wf.width = BINS; wf.height = 300;
   const rowImg = wctx.createImageData(BINS, 1);
 
-  // Text channels in the order of UiTextChannel (CW, RTTY, PSK, APRS, POCSAG): the
+  // Text channels in the order of UiTextChannel (CW, RTTY, PSK, APRS, POCSAG, DTMF/CTCSS): the
   // element each one goes to and the next sequence number wanted.
-  const TEXT_IDS = ['text', 'rtext', 'ptext', 'atext', 'gtext'];
+  const TEXT_IDS = ['text', 'rtext', 'ptext', 'atext', 'gtext', 'dtext'];
   let binHz = 12000 / 1024, rSeq = 0, first = true;
   const tSeqs = TEXT_IDS.map(() => 0);
   let rtty = { mark: 0, space: 0 }, pskHz = 0;
@@ -495,6 +511,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     TEXT_IDS.forEach((id, i) => { if (d.tx && d.tx[i]) appendText(id, d.tx[i]); if (d.s) tSeqs[i] = d.s[i]; });
     $('aprs').textContent = d.aprs_n ? `${d.aprs_n} trama${d.aprs_n > 1 ? 's' : ''}` : '-';
     $('pgTab').hidden = $('pgMetric').hidden = !d.pocsag;
+    $('ctcss').textContent = d.ctcss ? d.ctcss.toFixed(1) + ' Hz' : '-';
     $('pg').textContent = d.pg_n ? `${d.pg_n} mensage${d.pg_n > 1 ? 'ns' : 'm'}` : '-';
     pskHz = d.psk_on ? d.psk_hz : 0;
     $('psk').textContent = d.psk_hz
@@ -512,7 +529,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     $('sstvAdjust').checked = d.sstv_adjust;
     showFtx(d);
     if (d.gal !== galSeq) loadGallery(d.gal);
-    const live = { cw: !!d.tone, rtty: !!d.rtty_on, psk: !!d.psk_on, aprs: !!d.aprs_on, pocsag: !!d.pg_on, ftx: d.ftx_mode > 0 && d.ftx_time,
+    const live = { cw: !!d.tone, rtty: !!d.rtty_on, psk: !!d.psk_on, aprs: !!d.aprs_on, pocsag: !!d.pg_on, tones: !!d.ctcss, ftx: d.ftx_mode > 0 && d.ftx_time,
                    img: d.fax_state > 0 || d.sstv_rx };
     for (const b of document.querySelectorAll('#tabs button')) b.classList.toggle('live', !!live[b.dataset.tab]);
     faxState = d.fax_state;
@@ -660,6 +677,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   $('aclear').onclick = () => { $('atext').textContent = ''; };
   copyButton('gcopy', 'gtext');
   $('gclear').onclick = () => { $('gtext').textContent = ''; };
+  copyButton('dcopy', 'dtext');
+  $('dclear').onclick = () => { $('dtext').textContent = ''; };
   $('baud').onchange = () => postConfig({ rtty_baud: $('baud').value });
   $('pol').onchange = () => postConfig({ rtty_pol: $('pol').value });
 

@@ -1,5 +1,8 @@
 #include "fm_demod.h"
 
+// The project builds with -Og; this DSP runs on every sample of the analysis.
+#pragma GCC optimize("O2")
+
 #include <math.h>
 
 #include "config.h"

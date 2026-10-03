@@ -191,6 +191,10 @@
 #define POCSAG_RECENT_S     10      // "POCSAG" shown as live this long after a message
 #define POCSAG_SELFTEST     0       // 1 = decode generated transmissions at boot and log the result
 
+// DTMF and CTCSS (tone_decoder.h).
+#define TONES_TEXT_MAX      512     // text buffered per report
+#define TONES_SELFTEST      0       // 1 = decode generated tones at boot and log the result
+
 // Image modes (FAX, SSTV): shared FM discriminator (fm_demod.cpp)
 #define FM_CENTER_HZ        1700.0f // SSTV 1100..2300 Hz, FAX 1500..2300 Hz
 #define FM_CUTOFF_HZ        1000.0f // low-pass after mixing: 700..2700 Hz

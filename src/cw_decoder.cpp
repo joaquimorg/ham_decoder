@@ -1,5 +1,8 @@
 #include "cw_decoder.h"
 
+// The project builds with -Og; this DSP runs on every sample of the analysis.
+#pragma GCC optimize("O2")
+
 #include <stdio.h>
 #include <string.h>
 #include <math.h>

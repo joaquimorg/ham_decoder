@@ -1,5 +1,8 @@
 #include "sstv_decoder.h"
 
+// The project builds with -Og; this DSP runs on every sample of the analysis.
+#pragma GCC optimize("O2")
+
 #include <math.h>
 #include <stdio.h>
 #include <stdint.h>

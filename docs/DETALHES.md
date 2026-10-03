@@ -229,6 +229,13 @@ Para juntar exemplos reais: `ML_LOG_FEATURES 1` e `ML_LOG_LABEL "CW"` em `config
 - [ ] pelo altifalante (áudio cortado a 100-300 Hz) os 512/1200 baud ficam fora de alcance: usar a saída do discriminador
 - [ ] validar com sinais reais
 
+### V0.12 - DTMF / CTCSS
+- [x] DTMF: Goertzel nas 8 frequências em blocos de 25 ms, par linha/coluna com a maior parte da energia, twist e restantes tons verificados, dígito aceite em 2 blocos; uma linha por sequência
+- [x] CTCSS: 50 subtons, passa-baixo a 300 Hz e 1 kHz, Goertzel com janela de Hann de 1 s a cada 0,5 s (resolução de 1 Hz), tom aceite em 2 janelas
+- [x] autoteste na placa (`TONES_SELFTEST`): sequência DTMF com twist e ruído, voz sem falsos dígitos, CTCSS 88,5 e 250,3 Hz junto dos vizinhos, só ruído
+- [ ] DCS (código digital de 134,4 bit/s)
+- [ ] validar com sinais reais
+
 ### Interface
 - [x] LCD: separador Texto com sub-separadores por canal (ponto = texto novo; tramas/mensagens com marcador)
 - [x] LCD RX: waterfall com a altura toda; por cima, para cada canal com texto recente, o nome do modo e 4 linhas
@@ -268,6 +275,7 @@ rx_analyzer/
 │   ├── aprs_decoder.h
 │   ├── aprs_format.h
 │   ├── pocsag_decoder.h
+│   ├── tone_decoder.h
 │   ├── fm_demod.h
 │   ├── fax_decoder.h
 │   ├── sstv_decoder.h
@@ -297,6 +305,7 @@ rx_analyzer/
 │   ├── aprs_decoder.cpp
 │   ├── aprs_format.cpp
 │   ├── pocsag_decoder.cpp
+│   ├── tone_decoder.cpp
 │   ├── fm_demod.cpp     (discriminador FM para FAX e SSTV)
 │   ├── fax_decoder.cpp
 │   ├── sstv_decoder.cpp

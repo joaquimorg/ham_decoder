@@ -1,4 +1,7 @@
 #include <stdio.h>
+
+// The project builds with -Og; this DSP runs on every sample of the analysis.
+#pragma GCC optimize("O2")
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
@@ -11,6 +14,7 @@
 #include "psk_decoder.h"
 #include "aprs_decoder.h"
 #include "pocsag_decoder.h"
+#include "tone_decoder.h"
 #include "fm_demod.h"
 #include "fax_decoder.h"
 #include "sstv_decoder.h"
@@ -482,6 +486,13 @@ void report()
     pocsag_recent = pocsag_last_us() && esp_timer_get_time() - pocsag_last_us() < POCSAG_RECENT_S * 1000000LL;
 #endif
     ui_push_text(UI_TEXT_POCSAG, pocsag_text);
+
+    // DTMF / CTCSS, also all the time; digits this second name the report.
+    EXT_RAM_BSS_ATTR static char tones_text[TONES_TEXT_MAX + 1];
+    tones_take_text(tones_text, sizeof(tones_text));
+    if (dtmf_last_us() && esp_timer_get_time() - dtmf_last_us() < 1000000 && !image_on)
+        snprintf(label, sizeof(label), "DTMF %s", dtmf_last());
+    ui_push_text(UI_TEXT_TONES, tones_text);
 #if SERIAL_REPORT >= 2
     for (char *p = rtty_text; *p; p++)
         if (*p == '\n')
@@ -533,6 +544,7 @@ void report()
     ws.pocsag_msgs = pocsag_messages();
 #endif
     ws.pocsag_recent = pocsag_recent;
+    ws.ctcss_hz = ctcss_hz();
     strlcpy(ws.ml_label, ml_class_name(ml.cls), sizeof(ws.ml_label));
     ws.ml_prob = ml.prob;
     ui_push_status(ws);
@@ -577,12 +589,13 @@ void report()
         strlcpy(last_kind, kind, sizeof(last_kind));
         last_ml = ml.cls;
     }
-    if (cw_text[0] || rtty_text[0] || psk_text[0] || aprs_text[0] || pocsag_text[0]) {
+    if (cw_text[0] || rtty_text[0] || psk_text[0] || aprs_text[0] || pocsag_text[0] || tones_text[0]) {
         fputs(cw_text, stdout);
         fputs(rtty_text, stdout);
         fputs(psk_text, stdout);
         fputs(aprs_text, stdout);
         fputs(pocsag_text, stdout);
+        fputs(tones_text, stdout);
         fflush(stdout);
     }
 #endif
@@ -625,6 +638,10 @@ void analyzer_init()
 #if APRS_SELFTEST
     aprs_selftest();
 #endif
+    tones_init();
+#if TONES_SELFTEST
+    tones_selftest();
+#endif
 #if POCSAG_ENABLE
     pocsag_init();
 #if POCSAG_SELFTEST
@@ -651,6 +668,7 @@ void analyzer_process_block(const float *x, int32_t raw_peak, uint32_t overruns)
 #if POCSAG_ENABLE
     pocsag_process(x, N);
 #endif
+    tones_process(x, N);
     static float fm_hz[N], fm_mag[N];
     // Blocks dropped since the last one (analysis behind): FAX and SSTV count
     // time in samples, so they get the missing samples as a mid-grey tone

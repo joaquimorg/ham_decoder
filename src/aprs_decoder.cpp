@@ -1,5 +1,9 @@
 #include "aprs_decoder.h"
 
+// The project builds with -Og; this runs on every sample (with the other
+// decoders it took the analysis over 100% of its time).
+#pragma GCC optimize("O2")
+
 #include <math.h>
 #include <stdio.h>
 #include <string.h>

@@ -59,7 +59,7 @@ static const char *TAG = "LCD";
 #define RX_ROW_H        15      // font_ui_12 line height
 #define RX_HEAD_H       24      // mode name above the rows (with a gap before them)
 #define RX_LINE_H       (RX_HEAD_H + RX_LINE_ROWS * RX_ROW_H + 2)    // one channel's box: 86
-#define RX_LINES        2       // at most this many channels shown on the RX tab
+#define RX_LINES        1       // channels shown on the RX tab: only the last one to decode
 #define RX_LINE_HOLD_MS 120000  // a channel's lines stay this long after its last text
 #define TEXT_KEEP       500     // characters kept for the RX-tab view
 #define TEXT_TAB_LINES  25      // lines kept in the Text tab (as shown, after wrapping)
@@ -356,6 +356,7 @@ static const TextChannelDef TEXT_DEFS[] = {
 #if POCSAG_ENABLE
     { UI_TEXT_POCSAG, "POCSAG", 0xffb070, true },
 #endif
+    { UI_TEXT_TONES, "DTMF", 0xc0c0ff, true },    // DTMF sequences and CTCSS tones
 };
 constexpr int TEXT_CH = sizeof(TEXT_DEFS) / sizeof(TEXT_DEFS[0]);
 static lv_obj_t *lbl_line[TEXT_CH], *box_line[TEXT_CH], *ta_text[TEXT_CH];
@@ -1476,7 +1477,7 @@ static void build_ui()
     layout_rx_lines();
 
     // Text: a sub-tab per channel (buttons on top, a dot = new text) and one
-    // clear button for the channel shown; its last TEXT_TAB_LINES lines below.
+    // clear button (trash icon) for the channel shown; its text below.
     lv_obj_set_flex_flow(tab_text, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(tab_text, 4, 0);
     lv_obj_set_style_pad_row(tab_text, 4, 0);
@@ -1490,10 +1491,11 @@ static void build_ui()
         lv_obj_t *b = lv_button_create(tbar);
         lv_obj_set_height(b, 30);
         lv_obj_set_style_pad_ver(b, 0, 0);
-        lv_obj_set_style_pad_hor(b, 12, 0);
+        lv_obj_set_style_pad_hor(b, 7, 0);    // all the channels and the clear button fit in a row
         lv_obj_set_style_bg_color(b, lv_color_hex(0x2a3550), 0);
         lv_obj_set_style_bg_color(b, lv_color_hex(0x3d6fd6), LV_STATE_CHECKED);
         lv_obj_t *l = lv_label_create(b);
+        lv_obj_set_style_text_font(l, &font_ui_14, 0);
         lv_obj_set_style_text_color(l, lv_color_hex(TEXT_DEFS[i].color), 0);
         lv_obj_center(l);
         lv_obj_add_event_cb(b, text_btn_event, LV_EVENT_CLICKED, (void *)(intptr_t)i);
@@ -1507,8 +1509,9 @@ static void build_ui()
     lv_obj_t *clear = lv_button_create(tbar);
     lv_obj_set_height(clear, 30);
     lv_obj_set_style_pad_ver(clear, 0, 0);
+    lv_obj_set_style_pad_hor(clear, 10, 0);
     lv_obj_t *cl = lv_label_create(clear);
-    lv_label_set_text_fmt(cl, LV_SYMBOL_TRASH " %s", tr(S_CLEAR));
+    lv_label_set_text(cl, LV_SYMBOL_TRASH);    // icon only: the channel buttons need the width
     lv_obj_center(cl);
     lv_obj_add_event_cb(clear, clear_text_event, LV_EVENT_CLICKED, nullptr);
     for (int i = 0; i < TEXT_CH; i++) {
