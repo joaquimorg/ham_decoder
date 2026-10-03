@@ -50,15 +50,11 @@
 #define ES8311_DIN_GPIO     6       // codec ADC -> ESP
 #define ES8311_DOUT_GPIO    8       // ESP -> codec DAC
 #define ES8311_PA_GPIO      1       // SC8002B enable, active low (pull-up = off)
-// 1 = MCLK from an integer divider (160 MHz / 13 = 12.3077 MHz, Fs = 48077 Hz):
-//     the ESP32-S3 has no audio PLL and the fractional divider for 12.288 MHz
-//     puts periodic jitter on the codec's sampling clock.
-#define ES8311_MCLK_INTEGER_DIV 0
 #define ES8311_CHANNEL      0       // slot read from the codec: 0 = left, 1 = right
 // Input gain: analog PGA 0..10 (3 dB steps) plus ADC scale 0..7 (6 dB steps).
 // Start low and raise it until the loudest signal stays below clipping.
 #define ES8311_MIC_PGA      0
-#define ES8311_ADC_SCALE    3
+#define ES8311_ADC_SCALE    4
 
 // Monitor: the received audio (as the analyzer hears it) on the board's speaker,
 // with a volume setting (LCD and web page). Works with any audio source.
@@ -72,6 +68,10 @@
 // noise and a fast tremolo. 0 disables a corner.
 #define MONITOR_LOW_HZ      200
 #define MONITOR_HIGH_HZ     3500
+// Speaker noise reduction (spectral, see noise_reduce.h): attenuates the
+// background noise between and under the signal by up to this many dB.
+#define MONITOR_NR          1
+#define MONITOR_NR_DEPTH_DB 15.0f
 // Speaker noise gate: mutes the monitor while there is no input, so the codec's
 // noise floor is not amplified. Levels are the band-passed mean |x| in dBFS:
 // opens above GATE_OPEN, closes below GATE_CLOSE (after 150 ms). 0 = no gate.
@@ -115,8 +115,17 @@
 
 // Capture rate; any multiple of DSP_SAMPLE_RATE works (24 kHz was tried to
 // halve BCK/MCLK and did not change the PCM1808 error rate).
+// The ES8311 samples straight at the DSP rate: its own decimation filter is the
+// anti-alias filter (it also rejects the backlight PWM at 24 kHz, which at
+// 48 kHz landed on fs/2), and capture plus monitor do a quarter of the work.
+// Blocks of ~5.3 ms either way.
+#if AUDIO_SOURCE == AUDIO_SRC_ES8311
+#define AUDIO_SAMPLE_RATE   12000
+#define AUDIO_BLOCK_SAMPLES 64
+#else
 #define AUDIO_SAMPLE_RATE   48000
 #define AUDIO_BLOCK_SAMPLES 256
+#endif
 // Both sources scale their full scale to +-AUDIO_FULL_SCALE (24-bit).
 #define AUDIO_FULL_SCALE    8388608.0f
 

@@ -12,11 +12,10 @@
 
 static const char *TAG = "ES8311";
 
-// 128 frames of 32-bit stereo per DMA buffer, 6 buffers (~16 ms) per direction:
-// 6 KB each, from the internal RAM that the Wi-Fi buffers also need (the DMA
-// descriptors cannot live in the PSRAM).
-#define ES_DMA_FRAMES   128
-#define ES_DMA_DESC     6
+// 32-bit stereo frames: 3 KB per direction, from the internal RAM that the
+// Wi-Fi buffers also need (the DMA buffers cannot live in the PSRAM).
+#define ES_DMA_FRAMES   ES8311_DMA_FRAMES
+#define ES_DMA_DESC     ES8311_DMA_DESC
 
 // ES8311 registers
 #define REG_RESET       0x00
@@ -143,8 +142,8 @@ static bool codec_init()
     e |= wr(0x11, 0x7F);
     e |= wr(REG_CLK1, 0x3F);                // all clocks on, MCLK from the pin
 
-    // 12.288 MHz MCLK, 48 kHz: pre_div 1, pre_mult 1, adc/dac div 1, OSR 0x10,
-    // LRCK divider 256, BCLK divider 4.
+    // MCLK = 256 fs (3.072 MHz at 12 kHz): pre_div 1, pre_mult 1, adc/dac div 1,
+    // OSR 0x10, LRCK divider 256, BCLK divider 4. Only the ratio matters.
     uint8_t v = 0;
     rd(REG_CLK2, &v);
     e |= wr(REG_CLK2, (v & 0x07) | (0 << 5) | (0 << 3));
@@ -210,11 +209,7 @@ bool es8311_start()
     ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, tx, rx));
 
     i2s_std_config_t std_cfg = {
-#if ES8311_MCLK_INTEGER_DIV
-        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(48077),
-#else
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_SAMPLE_RATE),
-#endif
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = (gpio_num_t)ES8311_MCLK_GPIO,
@@ -225,7 +220,7 @@ bool es8311_start()
             .invert_flags = {},
         },
     };
-    std_cfg.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;    // 12.288 MHz
+    std_cfg.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
 
     if (rx_handle) {
         std_cfg.gpio_cfg.din = (gpio_num_t)ES8311_DIN_GPIO;

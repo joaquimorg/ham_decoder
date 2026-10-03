@@ -1,5 +1,9 @@
 #include "audio_monitor.h"
 
+// The project builds with -Og; the per-sample DSP here needs real optimisation
+// (the STFT took ~3 ms of each 5.3 ms block and starved the analysis).
+#pragma GCC optimize("O2")
+
 #if AUDIO_MONITOR
 
 #include "freertos/FreeRTOS.h"
@@ -9,6 +13,7 @@
 #include "esp_log.h"
 
 #include "es8311.h"
+#include "noise_reduce.h"
 
 #include <math.h>
 
@@ -29,8 +34,9 @@ struct Biquad {
     }
 };
 
-static Biquad bq[3];
-static int bq_n = 0;
+static Biquad hp;            // MONITOR_LOW_HZ
+static Biquad lp[2];         // MONITOR_HIGH_HZ, 4th-order Butterworth
+static bool has_hp = false, has_lp = false;
 
 static void biquad_design(Biquad &q, bool high, float hz, float Q)
 {
@@ -46,12 +52,17 @@ static void biquad_design(Biquad &q, bool high, float hz, float Q)
 
 static void band_init()
 {
+#if MONITOR_NR
+    nr_init();
+#endif
 #if MONITOR_LOW_HZ > 0
-    biquad_design(bq[bq_n++], true, MONITOR_LOW_HZ, 0.7071f);
+    biquad_design(hp, true, MONITOR_LOW_HZ, 0.7071f);
+    has_hp = true;
 #endif
 #if MONITOR_HIGH_HZ > 0
-    biquad_design(bq[bq_n++], false, MONITOR_HIGH_HZ, 0.5412f);    // Butterworth 4th order
-    biquad_design(bq[bq_n++], false, MONITOR_HIGH_HZ, 1.3066f);
+    biquad_design(lp[0], false, MONITOR_HIGH_HZ, 0.5412f);
+    biquad_design(lp[1], false, MONITOR_HIGH_HZ, 1.3066f);
+    has_lp = true;
 #endif
 }
 
@@ -64,11 +75,13 @@ static volatile float gate_event_env = 0.0f;
 
 static inline float gate(float v)
 {
+    // Per-sample coefficients written for 48 kHz, scaled to the actual rate.
+    constexpr float k = 48000.0f / AUDIO_SAMPLE_RATE;
     const float full = 8388608.0f;
     static const float open_thr = full * powf(10.0f, MONITOR_GATE_OPEN / 20.0f);
     static const float close_thr = full * powf(10.0f, MONITOR_GATE_CLOSE / 20.0f);
     const float a = fabsf(v);
-    gate_env += (a > gate_env ? 0.02f : 0.0005f) * (a - gate_env);
+    gate_env += (a > gate_env ? 0.02f * k : 0.0005f * k) * (a - gate_env);
     if (gate_env > open_thr) {
         if (!gate_open) {
             gate_event = 1;
@@ -84,7 +97,7 @@ static inline float gate(float v)
         gate_event = 2;
         gate_event_env = gate_env;
     }
-    gate_gain += ((gate_open ? 1.0f : 0.0f) - gate_gain) * 0.002f;    // ~10 ms ramp
+    gate_gain += ((gate_open ? 1.0f : 0.0f) - gate_gain) * (0.002f * k);    // ~10 ms ramp
     return v * gate_gain;
 }
 #endif
@@ -92,8 +105,24 @@ static inline float gate(float v)
 static inline int32_t band(int32_t x)
 {
     float v = (float)x;
-    for (int i = 0; i < bq_n; i++)
-        v = bq[i].run(v);
+    if (has_hp)
+        v = hp.run(v);
+#if MONITOR_NR
+    // The noise reduction runs at NR_RATE: with a 48 kHz capture, a 4-sample
+    // mean in and the held output back at the full rate (the low-pass removes
+    // the images); with the ES8311 at 12 kHz, NR_DECIM is 1.
+    static float acc = 0.0f, held = 0.0f;
+    static int phase = 0;
+    acc += v;
+    if (++phase == NR_DECIM) {
+        held = nr_process(acc * (1.0f / NR_DECIM));
+        acc = 0.0f;
+        phase = 0;
+    }
+    v = held;
+#endif
+    if (has_lp)
+        v = lp[1].run(lp[0].run(v));
 #if MONITOR_GATE
     v = gate(v);
 #endif

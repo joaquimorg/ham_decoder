@@ -6,6 +6,10 @@
 
 #include "driver/i2s_std.h"
 
+// I2S DMA: frames per buffer and buffers per direction (~32 ms at 12 kHz).
+#define ES8311_DMA_FRAMES   64
+#define ES8311_DMA_DESC     6
+
 // Freenove FNK0104S's ES8311 codec: I2S master (MCLK 256 fs, 48 kHz, 32-bit
 // slots) plus the codec registers over the shared I2C bus. One I2S port serves
 // both directions: the receive channel only exists with AUDIO_SRC_ES8311, the
