@@ -19,7 +19,7 @@
 
 static const char *TAG = "MONITOR";
 
-// Speaker band-pass: 2nd-order high-pass plus 4th-order Butterworth low-pass.
+// Speaker band-pass: 4th-order Butterworth high-pass and low-pass.
 struct Biquad {
     float b0, b1, b2, a1, a2;
     float x1, x2, y1, y2;
@@ -34,7 +34,7 @@ struct Biquad {
     }
 };
 
-static Biquad hp;            // MONITOR_LOW_HZ
+static Biquad hp[2];         // MONITOR_LOW_HZ, 4th-order Butterworth
 static Biquad lp[2];         // MONITOR_HIGH_HZ, 4th-order Butterworth
 static bool has_hp = false, has_lp = false;
 
@@ -56,7 +56,8 @@ static void band_init()
     nr_init();
 #endif
 #if MONITOR_LOW_HZ > 0
-    biquad_design(hp, true, MONITOR_LOW_HZ, 0.7071f);
+    biquad_design(hp[0], true, MONITOR_LOW_HZ, 0.5412f);
+    biquad_design(hp[1], true, MONITOR_LOW_HZ, 1.3066f);
     has_hp = true;
 #endif
 #if MONITOR_HIGH_HZ > 0
@@ -106,7 +107,7 @@ static inline int32_t band(int32_t x)
 {
     float v = (float)x;
     if (has_hp)
-        v = hp.run(v);
+        v = hp[1].run(hp[0].run(v));
 #if MONITOR_NR
     // The noise reduction runs at NR_RATE: with a 48 kHz capture, a 4-sample
     // mean in and the held output back at the full rate (the low-pass removes

@@ -398,14 +398,27 @@ static void build_lut()
     }
 }
 
+// Spectrum and waterfall show the bins from VIEW_LO_HZ up, stretched over the
+// screen width (below it there is only hum and the radio's audio filter).
+#define VIEW_LO_HZ      200
+#define GRID_LABEL_H    14      // top of the spectrum kept for the grid labels
+constexpr float BIN_HZ = (float)DSP_SAMPLE_RATE / FFT_SIZE;
+constexpr int VIEW_BIN0 = (int)(VIEW_LO_HZ / BIN_HZ + 0.5f);
+constexpr int VIEW_BINS = UI_BINS - VIEW_BIN0;
+
+static inline int col_bin(int col)
+{
+    return VIEW_BIN0 + col * VIEW_BINS / LCD_H_RES;
+}
+
 static float col_hz(int col)
 {
-    return (col + 0.5f) * UI_BINS / LCD_H_RES * DSP_SAMPLE_RATE / FFT_SIZE;
+    return (VIEW_BIN0 + (col + 0.5f) * VIEW_BINS / LCD_H_RES) * BIN_HZ;
 }
 
 static int hz_col(float hz)
 {
-    return (int)(hz * FFT_SIZE / DSP_SAMPLE_RATE * LCD_H_RES / UI_BINS);
+    return (int)((hz / BIN_HZ - VIEW_BIN0) * LCD_H_RES / VIEW_BINS);
 }
 
 static lv_obj_t *make_canvas(lv_obj_t *parent, uint16_t **buf, int w, int h)
@@ -430,16 +443,16 @@ static void draw_rows(const uint8_t (*rows)[UI_BINS], int n)
     for (int r = 0; r < n; r++) {
         const uint8_t *row = rows[r];
         uint16_t hist[256] = {};
-        for (int i = 0; i < UI_BINS; i++)
+        for (int i = VIEW_BIN0; i < UI_BINS; i++)
             hist[row[i]]++;
         int q = 0;
-        for (int acc = 0; q < 255 && (acc += hist[q]) < UI_BINS / 5; q++) {}
+        for (int acc = 0; q < 255 && (acc += hist[q]) < VIEW_BINS / 5; q++) {}
         wf_floor = wf_floor < 0.0f ? q : wf_floor + (q - wf_floor) * 0.05f;
         const int lo = (int)wf_floor - 6;
 
         memmove(wf_buf + LCD_H_RES, wf_buf, LCD_H_RES * (WF_H - 1) * sizeof(uint16_t));
         for (int c = 0; c < LCD_H_RES; c++) {
-            int v = (row[c * UI_BINS / LCD_H_RES] - lo) * 255 / WF_SPAN;
+            int v = (row[col_bin(c)] - lo) * 255 / WF_SPAN;
             wf_buf[c] = wf_lut[v < 0 ? 0 : v > 255 ? 255 : v];
         }
     }
@@ -454,11 +467,11 @@ static void draw_rows(const uint8_t (*rows)[UI_BINS], int n)
         spec_buf[i] = bg;
     for (int hz = 500; col_hz(LCD_H_RES - 1) > hz; hz += 500) {
         const int c = hz_col(hz);
-        for (int y = 0; y < SPEC_H; y++)
+        for (int y = GRID_LABEL_H; y < SPEC_H; y++)
             spec_buf[y * LCD_H_RES + c] = grid;
     }
     for (int c = 0; c < LCD_H_RES; c++) {
-        int h = (row[c * UI_BINS / LCD_H_RES] - lo) * SPEC_H / WF_SPAN;
+        int h = (row[col_bin(c)] - lo) * SPEC_H / WF_SPAN;
         h = h < 0 ? 0 : h > SPEC_H ? SPEC_H : h;
         for (int y = SPEC_H - h; y < SPEC_H; y++)
             spec_buf[y * LCD_H_RES + c] = bar;
@@ -1477,6 +1490,21 @@ static void build_ui()
         lv_obj_set_clickable(c, true);
         lv_obj_add_event_cb(c, spectrum_event, LV_EVENT_SHORT_CLICKED, nullptr);
         lv_obj_add_event_cb(c, spectrum_event, LV_EVENT_LONG_PRESSED, nullptr);
+    }
+    // Frequency of each 500 Hz grid line, small, centred over it at the top of
+    // the spectrum (left out where it would not fit whole).
+    constexpr int GRID_LABEL_W = 56;
+    for (int hz = 500; col_hz(LCD_H_RES - 1) > hz; hz += 500) {
+        const int x = hz_col(hz) - GRID_LABEL_W / 2;
+        if (x < 0 || x + GRID_LABEL_W > LCD_H_RES)
+            continue;
+        lv_obj_t *l = lv_label_create(tab_rx);
+        lv_obj_set_style_text_font(l, &font_ui_12, 0);
+        lv_obj_set_style_text_color(l, lv_color_hex(0x8090b0), 0);
+        lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_width(l, GRID_LABEL_W);
+        lv_label_set_text_fmt(l, "%d Hz", hz);
+        lv_obj_set_pos(l, x, 0);
     }
     for (int i = 0; i < TEXT_CH; i++)
         text_views[i].ch = TEXT_DEFS[i].ch;
