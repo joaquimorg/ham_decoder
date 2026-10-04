@@ -33,7 +33,6 @@
 #include "settings.h"
 #include "sstv_decoder.h"
 #include "ui_hub.h"
-#include "hell_decoder.h"
 #include "web_ui.h"
 
 static const char *TAG = "LCD";
@@ -357,7 +356,6 @@ static const TextChannelDef TEXT_DEFS[] = {
 #if POCSAG_ENABLE
     { UI_TEXT_POCSAG, "POCSAG", 0xffb070, true },
 #endif
-    { UI_TEXT_NAVTEX, "NAVTEX", 0xa0e0a0, false },
     { UI_TEXT_TONES, "DTMF", 0xc0c0ff, true },    // DTMF sequences, CTCSS and DCS
 };
 constexpr int TEXT_CH = sizeof(TEXT_DEFS) / sizeof(TEXT_DEFS[0]);
@@ -368,25 +366,7 @@ static lv_obj_t *rx_head, *rx_rows, *rx_text, *rx_img;
 static uint16_t *rx_img_buf;
 static int rx_cur = -1;                 // channel shown, RX_SHOW_IMAGE, -1 = nothing yet
 static uint32_t rx_img_id = 0, rx_img_next = 0;    // image shown and its next line to draw
-// Sub-tabs: the text channels, then Feld-Hell (a canvas).
-constexpr int TEXT_SUBS = TEXT_CH + 1;
-constexpr int HELL_SUB = TEXT_CH;
-static lv_obj_t *text_btn[TEXT_SUBS], *text_btn_lbl[TEXT_SUBS];
-
-// Feld-Hell view: HELL_STRIPS strips filled left to right, each column drawn
-// twice (stacked) at HELL_SCALE; when the last strip is full they move up.
-#define HELL_SCALE      2
-#define HELL_STRIP_H    (2 * UI_HELL_ROWS * HELL_SCALE)     // 56
-#define HELL_GAP        6
-#define HELL_STRIPS     3
-#define HELL_PITCH      (HELL_STRIP_H + HELL_GAP)
-#define HELL_W          (LCD_H_RES - 8)
-#define HELL_H          (HELL_STRIPS * HELL_PITCH - HELL_GAP)
-#define HELL_COLS       (HELL_W / HELL_SCALE)
-static lv_obj_t *hell_canvas;
-static uint16_t *hell_buf;
-static uint32_t hell_seq = 0;
-static int hell_x = 0, hell_strip = 0;
+static lv_obj_t *text_btn[TEXT_CH], *text_btn_lbl[TEXT_CH];
 static int text_sel = 0;                // sub-tab shown
 static bool text_unread[TEXT_CH];       // new text in a sub-tab not shown
 static lv_obj_t *ftx_table, *lbl_ftx_state;
@@ -538,95 +518,29 @@ static TextView text_views[TEXT_CH];    // .ch set from TEXT_DEFS in build_ui()
 // Text sub-tab buttons: the shown one checked, a dot on those with new text.
 static void refresh_text_buttons()
 {
-    for (int i = 0; i < TEXT_SUBS; i++) {
+    for (int i = 0; i < TEXT_CH; i++) {
         if (!text_btn[i])
             continue;
         if (i == text_sel)
             lv_obj_add_state(text_btn[i], LV_STATE_CHECKED);
         else
             lv_obj_remove_state(text_btn[i], LV_STATE_CHECKED);
-        if (i == HELL_SUB)
-            lv_label_set_text(text_btn_lbl[i], "HELL");
-        else
-            lv_label_set_text_fmt(text_btn_lbl[i], "%s%s", TEXT_DEFS[i].name,
-                                  text_unread[i] ? " " LV_SYMBOL_BULLET : "");
+        lv_label_set_text_fmt(text_btn_lbl[i], "%s%s", TEXT_DEFS[i].name,
+                              text_unread[i] ? " " LV_SYMBOL_BULLET : "");
     }
 }
 
 static void select_text(int i)
 {
     text_sel = i;
-    if (i < TEXT_CH)
-        text_unread[i] = false;
+    text_unread[i] = false;
     for (int k = 0; k < TEXT_CH; k++) {
         if (k == i)
             lv_obj_remove_flag(ta_text[k], LV_OBJ_FLAG_HIDDEN);
         else
             lv_obj_add_flag(ta_text[k], LV_OBJ_FLAG_HIDDEN);
     }
-    if (hell_canvas) {
-        if (i == HELL_SUB)
-            lv_obj_remove_flag(hell_canvas, LV_OBJ_FLAG_HIDDEN);
-        else
-            lv_obj_add_flag(hell_canvas, LV_OBJ_FLAG_HIDDEN);
-    }
     refresh_text_buttons();
-}
-
-static void hell_clear()
-{
-    if (hell_buf)
-        memset(hell_buf, 0, HELL_W * HELL_H * sizeof(uint16_t));
-    hell_x = 0;
-    hell_strip = 0;
-    if (hell_canvas)
-        lv_obj_invalidate(hell_canvas);
-}
-
-// New Hell columns into the canvas; only the part drawn is redrawn.
-static void update_hell()
-{
-    if (!hell_canvas || !hell_buf)
-        return;
-    static uint8_t cols[32][UI_HELL_ROWS];
-    const int n = ui_get_hell(hell_seq, cols, 32, &hell_seq);
-    if (n <= 0)
-        return;
-    bool scrolled = false;
-    int x0 = hell_x, strip0 = hell_strip;
-    for (int c = 0; c < n; c++) {
-        if (hell_x >= HELL_COLS) {
-            hell_x = 0;
-            if (++hell_strip >= HELL_STRIPS) {
-                memmove(hell_buf, hell_buf + HELL_PITCH * HELL_W, (HELL_H - HELL_PITCH) * HELL_W * sizeof(uint16_t));
-                memset(hell_buf + (HELL_STRIPS - 1) * HELL_PITCH * HELL_W, 0,
-                       HELL_STRIP_H * HELL_W * sizeof(uint16_t));
-                hell_strip = HELL_STRIPS - 1;
-                scrolled = true;
-            }
-        }
-        for (int copy = 0; copy < 2; copy++) {
-            for (int r = 0; r < UI_HELL_ROWS; r++) {
-                const uint8_t v = cols[c][r];
-                const uint16_t px = rgb565(v * 3 / 4, v, v * 3 / 4);
-                const int y = hell_strip * HELL_PITCH + copy * UI_HELL_ROWS * HELL_SCALE +
-                              (UI_HELL_ROWS - 1 - r) * HELL_SCALE;    // bottom pixel first
-                for (int dy = 0; dy < HELL_SCALE; dy++)
-                    for (int dx = 0; dx < HELL_SCALE; dx++)
-                        hell_buf[(y + dy) * HELL_W + hell_x * HELL_SCALE + dx] = px;
-            }
-        }
-        hell_x++;
-    }
-    if (scrolled || hell_strip != strip0) {
-        lv_obj_invalidate(hell_canvas);
-        return;
-    }
-    lv_area_t a;
-    lv_obj_get_coords(hell_canvas, &a);
-    lv_area_t d = { (int32_t)(a.x1 + x0 * HELL_SCALE), (int32_t)(a.y1 + hell_strip * HELL_PITCH),
-                    (int32_t)(a.x1 + hell_x * HELL_SCALE - 1), (int32_t)(a.y1 + hell_strip * HELL_PITCH + HELL_STRIP_H - 1) };
-    lv_obj_invalidate_area(hell_canvas, &d);
 }
 
 static void text_btn_event(lv_event_t *e)
@@ -1484,7 +1398,6 @@ static void ui_timer(lv_timer_t *)
         update_status();
         for (int ch = 0; ch < TEXT_CH; ch++)
             update_text(ch);
-        update_hell();
         update_rx_image();
         update_ftx();
     }
@@ -1498,10 +1411,6 @@ static void ui_timer(lv_timer_t *)
 // Text tab "Clear": empties the shown channel's text area and its RX-tab line.
 static void clear_text_event(lv_event_t *)
 {
-    if (text_sel == HELL_SUB) {
-        hell_clear();
-        return;
-    }
     const int i = text_sel;
     TextView &tv = text_views[i];
     tv.len = 0;
@@ -1642,7 +1551,7 @@ static void build_ui()
     lv_obj_add_flag(subs, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(subs, LV_DIR_HOR);
     lv_obj_set_scrollbar_mode(subs, LV_SCROLLBAR_MODE_OFF);
-    for (int i = 0; i < TEXT_SUBS; i++) {
+    for (int i = 0; i < TEXT_CH; i++) {
         lv_obj_t *b = lv_button_create(subs);
         lv_obj_set_height(b, 30);
         lv_obj_set_style_pad_ver(b, 0, 0);
@@ -1651,7 +1560,7 @@ static void build_ui()
         lv_obj_set_style_bg_color(b, lv_color_hex(0x3d6fd6), LV_STATE_CHECKED);
         lv_obj_t *l = lv_label_create(b);
         lv_obj_set_style_text_font(l, &font_ui_12, 0);
-        lv_obj_set_style_text_color(l, lv_color_hex(i < TEXT_CH ? TEXT_DEFS[i].color : 0xd0d0d0), 0);
+        lv_obj_set_style_text_color(l, lv_color_hex(TEXT_DEFS[i].color), 0);
         lv_obj_center(l);
         lv_obj_add_event_cb(b, text_btn_event, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         text_btn[i] = b;
@@ -1667,10 +1576,6 @@ static void build_ui()
         lv_obj_set_style_text_color(ta, lv_color_hex(TEXT_DEFS[i].color), 0);
         ta_text[i] = ta;
     }
-    hell_canvas = make_canvas(tab_text, &hell_buf, HELL_W, HELL_H);
-    lv_obj_add_flag(hell_canvas, LV_OBJ_FLAG_HIDDEN);
-    hell_seq = 0;    // fetch the recent columns again (rebuilds)
-    hell_clear();
     select_text(text_sel);
 
     // FT8 / FT4: one compact line (mode + state) over the messages, newest first.

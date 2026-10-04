@@ -18,8 +18,6 @@ Descodificador/analisador de sinais de rádio **autónomo**, baseado em ESP32-S3
 - **Espectro e waterfall** em tempo real, com deteção e classificação automática do sinal (ruído, tom, CW, RTTY/FSK, PSK31, voz), por heurística e por um modelo **TinyML** (MLP int8) a correr na própria placa.
 - **CW (Morse)** e **RTTY** (Baudot, 45,45 / 50 / 75 baud), com estimativa de WPM, AFC e polaridade automática.
 - **PSK31 / PSK63 / PSK125** (BPSK, Varicode), com deteção automática da velocidade e do centro do sinal, e AFC.
-- **NAVTEX / SITOR-B** (100 baud, CCIR 476 com FEC), com polaridade e sincronismo automáticos.
-- **Feld-Hell**: o texto "desenhado" pelo tom, em colunas, no LCD e na página web.
 - **APRS / AX.25 a 1200 baud** (AFSK), a partir do áudio de um recetor FM; só mostra tramas com CRC válido.
 - **DTMF**, **CTCSS** (subtons de 67,0 a 254,1 Hz) e **DCS**; o CTCSS e o DCS precisam de áudio abaixo de 300 Hz (saída de linha ou do discriminador).
 - **POCSAG** 512 / 1200 / 2400 baud (pagers), com correção BCH; pode ser desligado no `config.h` (`POCSAG_ENABLE`), porque receber mensagens de terceiros pode ser proibido por lei.
@@ -93,8 +91,6 @@ A **standalone** radio signal decoder/analyzer built on the ESP32-S3. It connect
 - Real-time **spectrum and waterfall**, with automatic signal detection and classification (noise, tone, CW, RTTY/FSK, PSK31, voice), using both heuristics and an on-device **TinyML** model (int8 MLP).
 - **CW (Morse)** and **RTTY** (Baudot, 45.45 / 50 / 75 baud), with WPM estimation, AFC and automatic polarity.
 - **PSK31 / PSK63 / PSK125** (BPSK, Varicode), with automatic speed and centre detection, and AFC.
-- **NAVTEX / SITOR-B** (100 baud, CCIR 476 with FEC), with automatic polarity and sync.
-- **Feld-Hell**: the text "painted" by the tone, in columns, on the LCD and the web page.
 - **APRS / AX.25 at 1200 baud** (AFSK), from the audio of an FM receiver; only frames with a valid CRC are shown.
 - **DTMF**, **CTCSS** (67.0 to 254.1 Hz sub-tones) and **DCS**; CTCSS and DCS need audio below 300 Hz (line or discriminator output).
 - **POCSAG** 512 / 1200 / 2400 baud (pagers), with BCH correction; can be left out in `config.h` (`POCSAG_ENABLE`), as receiving third-party messages may be illegal.

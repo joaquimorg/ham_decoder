@@ -27,7 +27,6 @@ struct UiStatus {
     float rtty_mark_hz;     // 0 = unlocked
     float rtty_space_hz;
     bool rtty_active;       // squelch open
-    bool navtex_active;     // NAVTEX in sync
     float psk_hz;           // PSK decoder centre, 0 = unlocked
     bool psk_active;        // squelch open
     char psk_mode[8];       // "PSK31", "PSK63", "PSK125"
@@ -42,7 +41,7 @@ struct UiStatus {
     float ml_prob;
 };
 
-enum UiTextChannel { UI_TEXT_CW = 0, UI_TEXT_RTTY = 1, UI_TEXT_PSK = 2, UI_TEXT_APRS = 3, UI_TEXT_POCSAG = 4, UI_TEXT_TONES = 5, UI_TEXT_NAVTEX = 6, UI_TEXT_COUNT };
+enum UiTextChannel { UI_TEXT_CW = 0, UI_TEXT_RTTY = 1, UI_TEXT_PSK = 2, UI_TEXT_APRS = 3, UI_TEXT_POCSAG = 4, UI_TEXT_TONES = 5, UI_TEXT_COUNT };
 
 // Creates the shared state. Call before any producer runs.
 void ui_hub_init();
@@ -72,12 +71,6 @@ uint32_t ui_image_rotate(uint32_t id, int px);
 #define UI_GALLERY 5
 void ui_image_archive(uint32_t id);
 
-// Feld-Hell columns (UI_HELL_ROWS levels 0..255, bottom pixel first), from
-// the analysis task.
-#define UI_HELL_ROWS 14
-#define UI_HELL_RING 1024
-void ui_push_hell_column(const uint8_t *col);
-
 // Decoded FT8/FT4 message, from the decoding task.
 void ui_push_ftx(const FtxMessage &m);
 
@@ -95,10 +88,6 @@ UiStatus ui_get_status();
 // gets the last 512), NUL-terminated in out[UI_TEXT_RING + 1]. Returns the count.
 #define UI_TEXT_RING 2048
 int ui_get_text(UiTextChannel ch, uint32_t from, char *out, uint32_t *next);
-
-// Hell columns from sequence `from` on (a new or late reader gets the last
-// `max`). Returns the count; *next is the sequence after the last column.
-int ui_get_hell(uint32_t from, uint8_t (*out)[UI_HELL_ROWS], int max, uint32_t *next);
 
 // FT8/FT4 messages from sequence `from` on (at most UI_FTX_RING).
 #define UI_FTX_RING 64
