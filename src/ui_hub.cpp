@@ -26,7 +26,10 @@ struct TextRing {
     char buf[UI_TEXT_RING];
     uint32_t seq = 0;           // number of characters ever pushed
 };
-EXT_RAM_BSS_ATTR static TextRing texts[UI_TEXT_COUNT];    // UiTextChannel: CW, RTTY, PSK, APRS, POCSAG, DTMF/CTCSS
+EXT_RAM_BSS_ATTR static TextRing texts[UI_TEXT_COUNT];    // UiTextChannel: CW, RTTY, PSK, APRS, POCSAG, DTMF/CTCSS, multi-channel, Olivia
+
+EXT_RAM_BSS_ATTR static uint8_t qrss_cols[UI_QRSS_RING][UI_QRSS_BINS];
+static uint32_t qrss_seq = 0;
 
 static UiStatus status;
 static volatile float analysis_load = 0.0f;
@@ -53,6 +56,31 @@ void ui_set_load(float fraction)
 float ui_load()
 {
     return analysis_load;
+}
+
+void ui_push_qrss_column(const uint8_t *col)
+{
+    if (!lock)
+        return;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    memcpy(qrss_cols[qrss_seq % UI_QRSS_RING], col, UI_QRSS_BINS);
+    qrss_seq++;
+    xSemaphoreGive(lock);
+}
+
+int ui_get_qrss(uint32_t from, uint8_t (*out)[UI_QRSS_BINS], int max, uint32_t *next)
+{
+    if (max > UI_QRSS_RING)
+        max = UI_QRSS_RING;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    if (from > qrss_seq || qrss_seq - from > (uint32_t)max)
+        from = qrss_seq > (uint32_t)max ? qrss_seq - max : 0;
+    const int n = qrss_seq - from;
+    for (int i = 0; i < n; i++)
+        memcpy(out[i], qrss_cols[(from + i) % UI_QRSS_RING], UI_QRSS_BINS);
+    *next = qrss_seq;
+    xSemaphoreGive(lock);
+    return n;
 }
 
 void ui_push_spectrum(const uint8_t *row)

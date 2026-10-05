@@ -144,6 +144,9 @@
 #define SPECTRUM_MIN_HZ     100
 #define SPECTRUM_MAX_HZ     3500
 
+// The *_SELFTEST switches below can also be set from the compiler command
+// line (tools/host_test builds the decoders for the PC with them on).
+
 // Detection thresholds
 #define SIGNAL_MIN_SNR_DB   10.0f   // strongest peak above median floor
 #define PEAK_MIN_DB         10.0f   // candidate peak above floor
@@ -175,12 +178,34 @@
 // PSK31 / PSK63 / PSK125 (psk_decoder.h).
 #define PSK_TEXT_MAX        128     // decoded characters buffered per report (PSK125 is fast)
 #define PSK_UNLOCK_REPORTS  5       // seconds without PSK before unlocking
+#ifndef PSK_SELFTEST
 #define PSK_SELFTEST        0       // 1 = decode generated signals at boot and log the result
+#endif
+
+// Multi-channel CW / PSK31 (skimmer.h): narrow signals besides the one the
+// main decoders follow.
+#define SKIM_CHANNELS       6
+#define SKIM_TEXT_MAX       1024    // finished lines buffered per report
+
+// QRSS / DFCW slow waterfall (qrss.h).
+#define QRSS_DECIM          64      // 12 kHz -> 187.5 Hz
+#define QRSS_RATE           (DSP_SAMPLE_RATE / QRSS_DECIM)
+#define QRSS_FFT            512     // 2.7 s window, 0.37 Hz per bin
+#define QRSS_DEFAULT_HZ     1400    // 30 m: dial 10.1387 MHz USB puts 10.1400 MHz here
+
+// Olivia / Contestia (mfsk_decoder.h).
+#define MFSK_TEXT_MAX       256     // decoded characters buffered per report
+#define MFSK_SEARCH_BINS    4       // tuning search, half tone spacings either way (+-2 tones)
+#define MFSK_SNR_MIN        3.4f    // sync S/N needed to print (noise alone reaches ~3.1)
+#define MFSK_DEFAULT_HZ     1500
+#define MFSK_TASK_STACK     4096    // decoding task (core 0)
 
 // APRS / AX.25 1200 baud (aprs_decoder.h).
 #define APRS_TEXT_MAX       1024    // decoded frames buffered per report
 #define APRS_RECENT_S       10      // "APRS" shown as live this long after a frame
+#ifndef APRS_SELFTEST
 #define APRS_SELFTEST       0       // 1 = decode generated AFSK frames at boot and log the result
+#endif
 
 // POCSAG pagers 512/1200/2400 baud (pocsag_decoder.h). Receiving and showing
 // third-party paging messages may be restricted by law where you are (in
@@ -189,11 +214,15 @@
 #define POCSAG_ENABLE       1
 #define POCSAG_TEXT_MAX     1024    // decoded messages buffered per report
 #define POCSAG_RECENT_S     10      // "POCSAG" shown as live this long after a message
+#ifndef POCSAG_SELFTEST
 #define POCSAG_SELFTEST     0       // 1 = decode generated transmissions at boot and log the result
+#endif
 
 // DTMF and CTCSS (tone_decoder.h).
 #define TONES_TEXT_MAX      512     // text buffered per report
+#ifndef TONES_SELFTEST
 #define TONES_SELFTEST      0       // 1 = decode generated tones at boot and log the result
+#endif
 
 // Image modes (FAX, SSTV): shared FM discriminator (fm_demod.cpp)
 #define FM_CENTER_HZ        1700.0f // SSTV 1100..2300 Hz, FAX 1500..2300 Hz
@@ -274,6 +303,8 @@
 //   1 = decoded CW text as it arrives + a line when the kind of signal changes
 //   2 = full text waterfall line every second (plus CW_DEBUG / DIAG_VERBOSE)
 #define SERIAL_REPORT       1
+// > 0: log the analysis load (mean and the worst block) every this many seconds.
+#define LOAD_LOG_S          0
 
 // Text waterfall on the console (SERIAL_REPORT 2)
 #define WATERFALL_COLS          70

@@ -8,6 +8,9 @@
 #include <string.h>
 #include <time.h>
 #include <initializer_list>
+#include <algorithm>
+#include <stdlib.h>
+#include <math.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -30,6 +33,8 @@
 #include "board_i2c.h"
 #include "fax_decoder.h"
 #include "ftx_decoder.h"
+#include "qrss.h"
+#include "mfsk_decoder.h"
 #include "settings.h"
 #include "sstv_decoder.h"
 #include "ui_hub.h"
@@ -87,7 +92,8 @@ LV_FONT_DECLARE(font_ui_16)
 #define UI_STRINGS(X) \
     X(S_TAB_TEXT,       "Texto", "Text") \
     X(S_TAB_IMAGE,      "Imagem", "Image") \
-    X(S_FTX_MODES,      "Desligado\nFT8\nFT4", "Off\nFT8\nFT4") \
+    X(S_FTX_MODES,      "Desligado\nFT8\nFT4\nJS8 Normal\nJS8 Fast\nJS8 Turbo\nJS8 Slow", \
+                        "Off\nFT8\nFT4\nJS8 Normal\nJS8 Fast\nJS8 Turbo\nJS8 Slow") \
     X(S_FTX_OFF,        "Desligado", "Off") \
     X(S_FTX_NO_TIME,    "sem hora UTC (Wi-Fi/NTP)", "no UTC time (Wi-Fi/NTP)") \
     X(S_FTX_LAST,       "último período: %d msg, %d ms", "last slot: %d msg, %d ms") \
@@ -105,6 +111,13 @@ LV_FONT_DECLARE(font_ui_16)
     X(S_CFG_FAX_LPM,    "Linhas/min", "Lines/min") \
     X(S_CFG_FAX_AUTO,   "Início automático", "Automatic start") \
     X(S_CFG_SSTV_ADJ,   "Ajuste automático", "Automatic adjust") \
+    X(S_SEC_SKIM,       "Multicanal CW / PSK31", "Multi-channel CW / PSK31") \
+    X(S_CFG_ON,         "Ligado", "On") \
+    X(S_CFG_QRSS_HZ,    "Centro (Hz)", "Centre (Hz)") \
+    X(S_CFG_MFSK_MODE,  "Modo", "Mode") \
+    X(S_MFSK_MODES,     "Desligado\nOlivia\nContestia", "Off\nOlivia\nContestia") \
+    X(S_CFG_MFSK_TONES, "Tons", "Tones") \
+    X(S_CFG_MFSK_BW,    "Largura (Hz)", "Bandwidth (Hz)") \
     X(S_SEC_GENERAL,    "Geral", "General") \
     X(S_SEC_AUDIO,      "Áudio", "Audio") \
     X(S_SEC_NETWORK,    "Rede e sistema", "Network and system") \
@@ -347,16 +360,21 @@ struct TextChannelDef {
     const char *name;     // Text sub-tab and RX-tab heading
     uint32_t color;
     bool messages;        // one frame/message per line: a bullet starts each in the Text tab
+    bool rx_window;       // its text takes over the RX-tab window
 };
 static const TextChannelDef TEXT_DEFS[] = {
-    { UI_TEXT_CW, "CW", 0x9fe89f, false },
-    { UI_TEXT_RTTY, "RTTY", 0xf0d060, false },
-    { UI_TEXT_PSK, "PSK", 0x80c8ff, false },
-    { UI_TEXT_APRS, "APRS", 0xff9fd0, true },
+    { UI_TEXT_CW, "CW", 0x9fe89f, false, true },
+    { UI_TEXT_RTTY, "RTTY", 0xf0d060, false, true },
+    { UI_TEXT_PSK, "PSK", 0x80c8ff, false, true },
+    { UI_TEXT_APRS, "APRS", 0xff9fd0, true, true },
 #if POCSAG_ENABLE
-    { UI_TEXT_POCSAG, "POCSAG", 0xffb070, true },
+    { UI_TEXT_POCSAG, "POCSAG", 0xffb070, true, true },
 #endif
-    { UI_TEXT_TONES, "DTMF", 0xc0c0ff, true },    // DTMF sequences, CTCSS and DCS
+    { UI_TEXT_TONES, "DTMF", 0xc0c0ff, true, true },    // DTMF sequences, CTCSS and DCS
+    { UI_TEXT_MFSK, "OLIVIA", 0xffd0a0, false, true },  // Olivia / Contestia
+    // Multi-channel CW / PSK31: other signals, so it leaves the RX window to
+    // the main decoders.
+    { UI_TEXT_SKIM, "MULTI", 0xa0e0d0, true, false },
 };
 constexpr int TEXT_CH = sizeof(TEXT_DEFS) / sizeof(TEXT_DEFS[0]);
 static lv_obj_t *ta_text[TEXT_CH];
@@ -366,7 +384,21 @@ static lv_obj_t *rx_head, *rx_rows, *rx_text, *rx_img;
 static uint16_t *rx_img_buf;
 static int rx_cur = -1;                 // channel shown, RX_SHOW_IMAGE, -1 = nothing yet
 static uint32_t rx_img_id = 0, rx_img_next = 0;    // image shown and its next line to draw
-static lv_obj_t *text_btn[TEXT_CH], *text_btn_lbl[TEXT_CH];
+// Sub-tabs: the text channels, then the QRSS view (a canvas).
+constexpr int TEXT_SUBS = TEXT_CH + 1;
+constexpr int QRSS_SUB = TEXT_CH;
+static lv_obj_t *text_btn[TEXT_SUBS], *text_btn_lbl[TEXT_SUBS];
+
+// QRSS view: the middle QRSS_VIEW_H levels of each column, one pixel per
+// level and per column, the newest column on the right; frequency labels on
+// the left.
+#define QRSS_VIEW_H     196
+#define QRSS_AXIS_W     40
+#define QRSS_W          (LCD_H_RES - 8 - QRSS_AXIS_W)
+static lv_obj_t *qrss_box, *qrss_canvas, *qrss_axis;
+static uint16_t *qrss_buf;
+static uint32_t qrss_seq = 0;
+static int qrss_axis_hz = 0;
 static int text_sel = 0;                // sub-tab shown
 static bool text_unread[TEXT_CH];       // new text in a sub-tab not shown
 static lv_obj_t *ftx_table, *lbl_ftx_state;
@@ -531,29 +563,100 @@ static TextView text_views[TEXT_CH];    // .ch set from TEXT_DEFS in build_ui()
 // Text sub-tab buttons: the shown one checked, a dot on those with new text.
 static void refresh_text_buttons()
 {
-    for (int i = 0; i < TEXT_CH; i++) {
+    for (int i = 0; i < TEXT_SUBS; i++) {
         if (!text_btn[i])
             continue;
         if (i == text_sel)
             lv_obj_add_state(text_btn[i], LV_STATE_CHECKED);
         else
             lv_obj_remove_state(text_btn[i], LV_STATE_CHECKED);
-        lv_label_set_text_fmt(text_btn_lbl[i], "%s%s", TEXT_DEFS[i].name,
-                              text_unread[i] ? " " LV_SYMBOL_BULLET : "");
+        if (i == QRSS_SUB)
+            lv_label_set_text(text_btn_lbl[i], "QRSS");
+        else
+            lv_label_set_text_fmt(text_btn_lbl[i], "%s%s", TEXT_DEFS[i].name,
+                                  text_unread[i] ? " " LV_SYMBOL_BULLET : "");
     }
 }
 
 static void select_text(int i)
 {
     text_sel = i;
-    text_unread[i] = false;
+    if (i < TEXT_CH)
+        text_unread[i] = false;
     for (int k = 0; k < TEXT_CH; k++) {
         if (k == i)
             lv_obj_remove_flag(ta_text[k], LV_OBJ_FLAG_HIDDEN);
         else
             lv_obj_add_flag(ta_text[k], LV_OBJ_FLAG_HIDDEN);
     }
+    if (qrss_box) {
+        if (i == QRSS_SUB)
+            lv_obj_remove_flag(qrss_box, LV_OBJ_FLAG_HIDDEN);
+        else
+            lv_obj_add_flag(qrss_box, LV_OBJ_FLAG_HIDDEN);
+    }
     refresh_text_buttons();
+}
+
+static void qrss_clear()
+{
+    if (qrss_buf)
+        memset(qrss_buf, 0, QRSS_W * QRSS_VIEW_H * sizeof(uint16_t));
+    if (qrss_canvas)
+        lv_obj_invalidate(qrss_canvas);
+}
+
+// Frequency labels every 10 Hz, at their rows.
+static void qrss_update_axis()
+{
+    const int hz = (int)lroundf(qrss_center());
+    if (!qrss_axis || hz == qrss_axis_hz)
+        return;
+    qrss_axis_hz = hz;
+    lv_obj_clean(qrss_axis);
+    const float bin = qrss_bin_hz();
+    for (int off = -30; off <= 30; off += 10) {
+        const int y = QRSS_VIEW_H / 2 - (int)lroundf(off / bin);
+        if (y < 7 || y > QRSS_VIEW_H - 7)
+            continue;
+        lv_obj_t *l = lv_label_create(qrss_axis);
+        lv_obj_set_style_text_font(l, &font_ui_12, 0);
+        lv_obj_set_style_text_color(l, lv_color_hex(0x8090b0), 0);
+        lv_label_set_text_fmt(l, "%d", hz + off);
+        lv_obj_set_pos(l, 0, y - 7);
+    }
+}
+
+// New QRSS columns into the canvas (scrolling it left), coloured from each
+// column's median up.
+static void update_qrss()
+{
+    if (!qrss_canvas || !qrss_buf)
+        return;
+    qrss_update_axis();
+    EXT_RAM_BSS_ATTR static uint8_t cols[QRSS_W][UI_QRSS_BINS];
+    const int n = ui_get_qrss(qrss_seq, cols, QRSS_W, &qrss_seq);
+    if (n <= 0)
+        return;
+    const int shift = n < QRSS_W ? n : QRSS_W;
+    for (int y = 0; y < QRSS_VIEW_H; y++) {
+        uint16_t *row = qrss_buf + y * QRSS_W;
+        memmove(row, row + shift, (QRSS_W - shift) * sizeof(uint16_t));
+    }
+    const int first = UI_QRSS_BINS / 2 - QRSS_VIEW_H / 2;
+    for (int c = n - shift; c < n; c++) {
+        uint8_t sorted[UI_QRSS_BINS];
+        memcpy(sorted, cols[c], UI_QRSS_BINS);
+        std::nth_element(sorted, sorted + UI_QRSS_BINS / 2, sorted + UI_QRSS_BINS);
+        const int floor = sorted[UI_QRSS_BINS / 2] - 6;
+        const int x = QRSS_W - n + c;
+        for (int y = 0; y < QRSS_VIEW_H; y++) {
+            int v = (cols[c][first + QRSS_VIEW_H - 1 - y] - floor) * 255 / 70;    // top = highest frequency
+            qrss_buf[y * QRSS_W + x] = wf_lut[v < 0 ? 0 : v > 255 ? 255 : v];
+        }
+    }
+    if (text_sel == QRSS_SUB && lv_tabview_get_tab_active(tabview) == 1)
+        lv_obj_invalidate(qrss_canvas);
 }
 
 static void text_btn_event(lv_event_t *e)
@@ -681,7 +784,8 @@ static void update_text(int ch)
     const int n = ui_get_text(tv.ch, tv.seq, buf, &tv.seq);
     if (n <= 0)
         return;
-    rx_show_channel(ch);    // the RX window follows the last channel to decode
+    if (TEXT_DEFS[ch].rx_window)
+        rx_show_channel(ch);    // the RX window follows the last channel to decode
     if (ch != text_sel && !text_unread[ch]) {
         text_unread[ch] = true;
         refresh_text_buttons();
@@ -953,7 +1057,8 @@ static void img_stop_event(lv_event_t *)
 
 enum CfgId {
     CFG_CW_AUTO, CFG_CONTRAST, CFG_RTTY_BAUD, CFG_RTTY_POL, CFG_FAX_LPM, CFG_FAX_IOC,
-    CFG_FAX_AUTO, CFG_SSTV_ADJ, CFG_FTX_MODE, CFG_BRIGHT, CFG_WEB, CFG_LANGUAGE, CFG_VOLUME,
+    CFG_FAX_AUTO, CFG_SSTV_ADJ, CFG_FTX_MODE, CFG_BRIGHT, CFG_WEB, CFG_LANGUAGE, CFG_VOLUME, CFG_SKIM,
+    CFG_QRSS_HZ, CFG_MFSK_MODE, CFG_MFSK_TONES, CFG_MFSK_BW, CFG_MFSK_HZ,
 };
 
 static void rebuild_ui(void *);
@@ -961,6 +1066,20 @@ static void rebuild_ui(void *);
 static const float RTTY_BAUDS[] = { 45.45f, 50.0f, 75.0f, 100.0f };
 static const int FAX_LPMS[] = { 60, 90, 120, 240 };
 static const int FAX_IOCS[] = { 576, 288 };
+static const int QRSS_HZS[] = { 600, 800, 1000, 1200, 1400, 1500, 1600, 1800, 2000 };
+static const int MFSK_TONES[] = { 4, 8, 16, 32, 64 };
+static const int MFSK_BWS[] = { 125, 250, 500, 1000, 2000 };
+static const int MFSK_HZS[] = { 750, 1000, 1200, 1500, 1800, 2000 };
+
+// Nearest entry of a list (a value set on the web page may not be in it).
+static int nearest_index(const int *v, int n, int x)
+{
+    int sel = 0;
+    for (int k = 1; k < n; k++)
+        if (abs(v[k] - x) < abs(v[sel] - x))
+            sel = k;
+    return sel;
+}
 
 static lv_obj_t *sw_cw_auto;
 
@@ -984,6 +1103,25 @@ static void cfg_event(lv_event_t *e)
     case CFG_FAX_IOC:   g_settings.fax_ioc = FAX_IOCS[lv_dropdown_get_selected(obj)]; break;
     case CFG_FAX_AUTO:  g_settings.fax_auto = checked; break;
     case CFG_SSTV_ADJ:  g_settings.sstv_adjust = checked; break;
+    case CFG_SKIM:      g_settings.skim_enabled = checked; break;
+    case CFG_QRSS_HZ:   g_settings.qrss_hz = QRSS_HZS[lv_dropdown_get_selected(obj)]; break;
+    case CFG_MFSK_MODE: g_settings.mfsk_mode = lv_dropdown_get_selected(obj); break;
+    case CFG_MFSK_TONES:
+    case CFG_MFSK_BW: {
+        // Some pairs give a symbol too long for the decoder: those are refused.
+        const int t = id == CFG_MFSK_TONES ? MFSK_TONES[lv_dropdown_get_selected(obj)] : g_settings.mfsk_tones;
+        const int b = id == CFG_MFSK_BW ? MFSK_BWS[lv_dropdown_get_selected(obj)] : g_settings.mfsk_bw;
+        if (mfsk_valid(t, b)) {
+            g_settings.mfsk_tones = t;
+            g_settings.mfsk_bw = b;
+        } else {
+            lv_dropdown_set_selected(obj, id == CFG_MFSK_TONES ? nearest_index(MFSK_TONES, 5, g_settings.mfsk_tones)
+                                                               : nearest_index(MFSK_BWS, 5, g_settings.mfsk_bw));
+            save = false;
+        }
+        break;
+    }
+    case CFG_MFSK_HZ:   g_settings.mfsk_hz = MFSK_HZS[lv_dropdown_get_selected(obj)]; break;
     case CFG_FTX_MODE:  g_settings.ftx_mode = lv_dropdown_get_selected(obj); break;
     case CFG_BRIGHT:
         g_settings.lcd_brightness = lv_slider_get_value(obj);
@@ -1333,6 +1471,19 @@ static void build_settings(lv_obj_t *tab)
     cfg_switch(tab, tr(S_CFG_FAX_AUTO), g_settings.fax_auto, CFG_FAX_AUTO);
     cfg_section(tab, "SSTV");
     cfg_switch(tab, tr(S_CFG_SSTV_ADJ), g_settings.sstv_adjust, CFG_SSTV_ADJ);
+    cfg_section(tab, tr(S_SEC_SKIM));
+    cfg_switch(tab, tr(S_CFG_ON), g_settings.skim_enabled, CFG_SKIM);
+    cfg_section(tab, "QRSS");
+    cfg_dropdown(tab, tr(S_CFG_QRSS_HZ), "600\n800\n1000\n1200\n1400\n1500\n1600\n1800\n2000",
+                 nearest_index(QRSS_HZS, 9, g_settings.qrss_hz), CFG_QRSS_HZ);
+    cfg_section(tab, "Olivia / Contestia");
+    cfg_dropdown(tab, tr(S_CFG_MFSK_MODE), tr(S_MFSK_MODES), g_settings.mfsk_mode, CFG_MFSK_MODE);
+    cfg_dropdown(tab, tr(S_CFG_MFSK_TONES), "4\n8\n16\n32\n64", nearest_index(MFSK_TONES, 5, g_settings.mfsk_tones),
+                 CFG_MFSK_TONES);
+    cfg_dropdown(tab, tr(S_CFG_MFSK_BW), "125\n250\n500\n1000\n2000", nearest_index(MFSK_BWS, 5, g_settings.mfsk_bw),
+                 CFG_MFSK_BW);
+    cfg_dropdown(tab, tr(S_CFG_QRSS_HZ), "750\n1000\n1200\n1500\n1800\n2000",
+                 nearest_index(MFSK_HZS, 6, g_settings.mfsk_hz), CFG_MFSK_HZ);
 #if WEB_UI
     cfg_section(tab, tr(S_SEC_NETWORK));
     lv_obj_t *sw = cfg_switch(tab, tr(S_CFG_WEB), g_settings.web_enabled, CFG_WEB);
@@ -1413,6 +1564,7 @@ static void ui_timer(lv_timer_t *)
             update_text(ch);
         update_rx_image();
         update_ftx();
+        update_qrss();
     }
     const uint32_t tab = lv_tabview_get_tab_active(tabview);
     if (tab == 3 && tick % 5 == 2)    // image
@@ -1424,6 +1576,10 @@ static void ui_timer(lv_timer_t *)
 // Text tab "Clear": empties the shown channel's text area and its RX-tab line.
 static void clear_text_event(lv_event_t *)
 {
+    if (text_sel == QRSS_SUB) {
+        qrss_clear();
+        return;
+    }
     const int i = text_sel;
     TextView &tv = text_views[i];
     tv.len = 0;
@@ -1476,7 +1632,7 @@ static void build_ui()
     lv_obj_set_scrollable(lv_tabview_get_content(tabview), false);
     tab_rx = plain(lv_tabview_add_tab(tabview, "RX"));
     tab_text = lv_tabview_add_tab(tabview, tr(S_TAB_TEXT));
-    tab_ftx = lv_tabview_add_tab(tabview, "FT8");
+    tab_ftx = lv_tabview_add_tab(tabview, "FT8/JS8");
     tab_img = plain(lv_tabview_add_tab(tabview, tr(S_TAB_IMAGE)));
     tab_cfg = lv_tabview_add_tab(tabview, LV_SYMBOL_SETTINGS);
     lv_obj_set_style_text_font(lv_tabview_get_tab_bar(tabview), &font_ui_16, 0);
@@ -1579,7 +1735,7 @@ static void build_ui()
     lv_obj_add_flag(subs, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(subs, LV_DIR_HOR);
     lv_obj_set_scrollbar_mode(subs, LV_SCROLLBAR_MODE_OFF);
-    for (int i = 0; i < TEXT_CH; i++) {
+    for (int i = 0; i < TEXT_SUBS; i++) {
         lv_obj_t *b = lv_button_create(subs);
         lv_obj_set_height(b, 30);
         lv_obj_set_style_pad_ver(b, 0, 0);
@@ -1588,7 +1744,7 @@ static void build_ui()
         lv_obj_set_style_bg_color(b, lv_color_hex(0x3d6fd6), LV_STATE_CHECKED);
         lv_obj_t *l = lv_label_create(b);
         lv_obj_set_style_text_font(l, &font_ui_12, 0);
-        lv_obj_set_style_text_color(l, lv_color_hex(TEXT_DEFS[i].color), 0);
+        lv_obj_set_style_text_color(l, lv_color_hex(i < TEXT_CH ? TEXT_DEFS[i].color : 0xd0d0d0), 0);
         lv_obj_center(l);
         lv_obj_add_event_cb(b, text_btn_event, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         text_btn[i] = b;
@@ -1604,6 +1760,18 @@ static void build_ui()
         lv_obj_set_style_text_color(ta, lv_color_hex(TEXT_DEFS[i].color), 0);
         ta_text[i] = ta;
     }
+    qrss_box = plain(lv_obj_create(tab_text));
+    lv_obj_set_style_bg_opa(qrss_box, LV_OPA_TRANSP, 0);
+    lv_obj_set_size(qrss_box, lv_pct(100), QRSS_VIEW_H);
+    qrss_axis = plain(lv_obj_create(qrss_box));
+    lv_obj_set_style_bg_opa(qrss_axis, LV_OPA_TRANSP, 0);
+    lv_obj_set_size(qrss_axis, QRSS_AXIS_W, QRSS_VIEW_H);
+    qrss_axis_hz = 0;
+    qrss_canvas = make_canvas(qrss_box, &qrss_buf, QRSS_W, QRSS_VIEW_H);
+    lv_obj_set_pos(qrss_canvas, QRSS_AXIS_W, 0);
+    lv_obj_add_flag(qrss_box, LV_OBJ_FLAG_HIDDEN);
+    qrss_seq = 0;    // fetch the recent columns again (rebuilds)
+    qrss_clear();
     select_text(text_sel);
 
     // FT8 / FT4: one compact line (mode + state) over the messages, newest first.

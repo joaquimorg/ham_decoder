@@ -18,6 +18,8 @@ typedef struct
     int time_osr;            ///< Number of time subdivisions
     int freq_osr;            ///< Number of frequency subdivisions
     ftx_protocol_t protocol; ///< Protocol: FT4 or FT8
+    float symbol_period;     ///< [ham_decoder] seconds, 0 = the protocol's (JS8 submodes differ)
+    float slot_time;         ///< [ham_decoder] seconds, 0 = the protocol's
 } monitor_config_t;
 
 /// FT4/FT8 monitor object that manages DSP processing of incoming audio data

@@ -29,7 +29,7 @@ struct UiStatus {
     bool rtty_active;       // squelch open
     float psk_hz;           // PSK decoder centre, 0 = unlocked
     bool psk_active;        // squelch open
-    char psk_mode[8];       // "PSK31", "PSK63", "PSK125"
+    char psk_mode[8];       // "PSK31" .. "PSK500", "QPSK31" .. "QPSK500"
     uint32_t aprs_frames;   // APRS frames since boot
     bool aprs_recent;       // a frame in the last APRS_RECENT_S seconds
     uint32_t pocsag_msgs;   // POCSAG messages since boot
@@ -37,11 +37,15 @@ struct UiStatus {
     float ctcss_hz;         // CTCSS tone present, 0 = none
     int dcs_code;           // DCS code present (octal value), -1 = none
     bool dcs_inv;           // its polarity is I
+    int skim_channels;      // multi-channel CW / PSK31 channels in use
+    bool mfsk_active;       // Olivia / Contestia printing
+    float mfsk_snr;
+    char mfsk_name[24];     // "OLIVIA 32/1000", "" = off
     char ml_label[8];       // TinyML classifier
     float ml_prob;
 };
 
-enum UiTextChannel { UI_TEXT_CW = 0, UI_TEXT_RTTY = 1, UI_TEXT_PSK = 2, UI_TEXT_APRS = 3, UI_TEXT_POCSAG = 4, UI_TEXT_TONES = 5, UI_TEXT_COUNT };
+enum UiTextChannel { UI_TEXT_CW = 0, UI_TEXT_RTTY = 1, UI_TEXT_PSK = 2, UI_TEXT_APRS = 3, UI_TEXT_POCSAG = 4, UI_TEXT_TONES = 5, UI_TEXT_SKIM = 6, UI_TEXT_MFSK = 7, UI_TEXT_COUNT };
 
 // Creates the shared state. Call before any producer runs.
 void ui_hub_init();
@@ -71,6 +75,12 @@ uint32_t ui_image_rotate(uint32_t id, int px);
 #define UI_GALLERY 5
 void ui_image_archive(uint32_t id);
 
+// QRSS slow waterfall columns (qrss.h): UI_QRSS_BINS levels (0.5 dB steps
+// from -140 dBFS, lowest frequency first), from the analysis task.
+#define UI_QRSS_BINS 256
+#define UI_QRSS_RING 512
+void ui_push_qrss_column(const uint8_t *col);
+
 // Decoded FT8/FT4 message, from the decoding task.
 void ui_push_ftx(const FtxMessage &m);
 
@@ -88,6 +98,10 @@ UiStatus ui_get_status();
 // gets the last 512), NUL-terminated in out[UI_TEXT_RING + 1]. Returns the count.
 #define UI_TEXT_RING 2048
 int ui_get_text(UiTextChannel ch, uint32_t from, char *out, uint32_t *next);
+
+// QRSS columns from sequence `from` on (a new or late reader gets the last
+// `max`). Returns the count; *next is the sequence after the last column.
+int ui_get_qrss(uint32_t from, uint8_t (*out)[UI_QRSS_BINS], int max, uint32_t *next);
 
 // FT8/FT4 messages from sequence `from` on (at most UI_FTX_RING).
 #define UI_FTX_RING 64

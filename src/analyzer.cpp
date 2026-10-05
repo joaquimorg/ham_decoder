@@ -12,6 +12,9 @@
 #include "cw_decoder.h"
 #include "rtty_decoder.h"
 #include "psk_decoder.h"
+#include "skimmer.h"
+#include "qrss.h"
+#include "mfsk_decoder.h"
 #include "aprs_decoder.h"
 #include "pocsag_decoder.h"
 #include "tone_decoder.h"
@@ -221,6 +224,35 @@ float psk_centre(float peak_hz, float noise_db)
         swf += p * k * BIN_HZ;
     }
     return sw > 0 ? (float)(swf / sw) : peak_hz;
+}
+
+// A narrow signal around a peak (CW, PSK31): its power-weighted centre within
+// +-SKIM_NARROW_HZ (the two peaks of an idle PSK31 signal give its carrier),
+// and most of its power there rather than spread over +-SKIM_WIDE_HZ (RTTY,
+// wider PSK, voice).
+constexpr float SKIM_NARROW_HZ = 40.0f, SKIM_WIDE_HZ = 150.0f;
+
+bool narrow_signal(float peak_hz, float floor_lin, float *centre)
+{
+    const int kc = (int)(peak_hz / BIN_HZ + 0.5f);
+    const int wn = (int)(SKIM_NARROW_HZ / BIN_HZ + 0.5f), ww = (int)(SKIM_WIDE_HZ / BIN_HZ + 0.5f);
+    double near = 0, wide = 0, swf = 0;
+    for (int k = kc - ww; k <= kc + ww; k++) {
+        if (k < 1 || k >= HALF)
+            continue;
+        const double p = psd_avg[k] - floor_lin;
+        if (p <= 0)
+            continue;
+        wide += p;
+        if (abs(k - kc) <= wn) {
+            near += p;
+            swf += p * k * BIN_HZ;
+        }
+    }
+    if (near <= 0)
+        return false;
+    *centre = (float)(swf / near);
+    return near >= 0.75 * wide;
 }
 
 void report()
@@ -451,13 +483,17 @@ void report()
     // through short pauses.
     const bool ml_psk = strcmp(ml_class_name(ml.cls), "PSK31") == 0 && ml.prob >= 0.6f &&
                         npeaks > 0 && snr >= SIGNAL_MIN_SNR_DB;
+    // The classifier was trained on PSK31..125: a wider signal (PSK250/500,
+    // QPSK) that nothing else claims is tried at the centre of its band.
+    const bool wide_guess = !ml_psk && npeaks > 0 && snr >= SIGNAL_MIN_SNR_DB && !narrow_tone &&
+                            fsk_lo <= 0.0f && !rtty_on && occ_hz >= 150.0f && occ_hz <= 1200.0f;
     if (image_on) {
         if (psk_tone_hz() > 0.0f)
             psk_set_tone(0.0f);
     } else if (psk_on) {
         psk_unlock_reports = 0;
-    } else if (ml_psk) {
-        const float c = psk_centre(peaks[0].hz, noise_db);
+    } else if (ml_psk || wide_guess) {
+        const float c = ml_psk ? psk_centre(peaks[0].hz, noise_db) : 0.5f * (occ_first + occ_last) * BIN_HZ;
         if (psk_tone_hz() <= 0.0f || fabsf(c - psk_tone_hz()) > 15.0f)
             psk_set_tone(c);
         psk_unlock_reports = 0;
@@ -468,11 +504,49 @@ void report()
     psk_take_text(psk_text, sizeof(psk_text));
     ui_push_text(UI_TEXT_PSK, psk_text);
 
+    // Multi-channel CW / PSK31 on the other narrow signals (not during an
+    // image: FAX/SSTV fill the band with narrow-looking peaks).
+    if (!image_on) {
+        const float floor_lin = powf(10.0f, noise_db / 10.0f);
+        SkimSignal sig[MAX_CANDIDATES];
+        int nsig = 0;
+        for (int i = 0; i < ncand; i++) {
+            // One tone of an FSK pair (RTTY before it is recognised, NAVTEX,
+            // SYNOP): another peak of similar level a standard shift away.
+            bool fsk = false;
+            for (int j = 0; j < ncand && !fsk; j++)
+                fsk = j != i && fabsf(cand[i].db - cand[j].db) < 10.0f &&
+                      standard_shift(fabsf(cand[i].hz - cand[j].hz)) != 0;
+            float c;
+            if (fsk || !narrow_signal(cand[i].hz, floor_lin, &c))
+                continue;
+            bool dup = false;
+            for (int j = 0; j < nsig; j++)
+                dup |= fabsf(sig[j].hz - c) < PEAK_MIN_SEP_HZ;
+            if (!dup)
+                sig[nsig++] = { c, cand[i].db };
+        }
+        const float busy[] = { cw_tone_hz(), psk_tone_hz(), rtty_mark_hz(), rtty_space_hz(), fsk_lo, fsk_hi };
+        skimmer_update(sig, nsig, busy, sizeof(busy) / sizeof(busy[0]));
+    } else {
+        skimmer_update(nullptr, 0, nullptr, 0);
+    }
+    // Olivia / Contestia (set up by the user); printing names the report.
+    char mfsk_text[MFSK_TEXT_MAX + 1];
+    mfsk_take_text(mfsk_text, sizeof(mfsk_text));
+    ui_push_text(UI_TEXT_MFSK, mfsk_text);
+    if (mfsk_active() && !image_on)
+        snprintf(label, sizeof(label), "%s S/N %.0f", mfsk_name(), mfsk_snr());
+
+    EXT_RAM_BSS_ATTR static char skim_text[SKIM_TEXT_MAX + 1];
+    skimmer_take_text(skim_text, sizeof(skim_text));
+    ui_push_text(UI_TEXT_SKIM, skim_text);
+
     // APRS runs all the time (packets are short bursts); a frame this second
     // names the report.
     EXT_RAM_BSS_ATTR static char aprs_text[APRS_TEXT_MAX + 1];
     if (aprs_take_text(aprs_text, sizeof(aprs_text)) > 0 && !image_on)
-        snprintf(label, sizeof(label), "APRS %s", aprs_last_source());
+        snprintf(label, sizeof(label), "APRS %s%s", aprs_last_hf() ? "HF " : "", aprs_last_source());
     ui_push_text(UI_TEXT_APRS, aprs_text);
     const bool aprs_recent = aprs_last_us() && esp_timer_get_time() - aprs_last_us() < APRS_RECENT_S * 1000000LL;
 
@@ -547,6 +621,10 @@ void report()
     ws.ctcss_hz = ctcss_hz();
     ws.dcs_code = dcs_code();
     ws.dcs_inv = dcs_inverted();
+    ws.skim_channels = skimmer_channels();
+    ws.mfsk_active = mfsk_active();
+    ws.mfsk_snr = mfsk_snr();
+    strlcpy(ws.mfsk_name, mfsk_name(), sizeof(ws.mfsk_name));
     strlcpy(ws.ml_label, ml_class_name(ml.cls), sizeof(ws.ml_label));
     ws.ml_prob = ml.prob;
     ui_push_status(ws);
@@ -591,13 +669,15 @@ void report()
         strlcpy(last_kind, kind, sizeof(last_kind));
         last_ml = ml.cls;
     }
-    if (cw_text[0] || rtty_text[0] || psk_text[0] || aprs_text[0] || pocsag_text[0] || tones_text[0]) {
+    if (cw_text[0] || rtty_text[0] || psk_text[0] || aprs_text[0] || pocsag_text[0] || tones_text[0] || skim_text[0] || mfsk_text[0]) {
         fputs(cw_text, stdout);
         fputs(rtty_text, stdout);
         fputs(psk_text, stdout);
         fputs(aprs_text, stdout);
         fputs(pocsag_text, stdout);
         fputs(tones_text, stdout);
+        fputs(skim_text, stdout);
+        fputs(mfsk_text, stdout);
         fflush(stdout);
     }
 #endif
@@ -633,6 +713,9 @@ void analyzer_init()
     cw_init();
     rtty_init();
     psk_init();
+    skimmer_init();
+    qrss_init();
+    mfsk_init();
 #if PSK_SELFTEST
     psk_selftest();
 #endif
@@ -666,6 +749,9 @@ void analyzer_process_block(const float *x, int32_t raw_peak, uint32_t overruns)
     cw_process(x, N);
     rtty_process(x, N);
     psk_process(x, N);
+    skimmer_process(x, N);
+    qrss_process(x, N);
+    mfsk_process(x, N);
     aprs_process(x, N);
 #if POCSAG_ENABLE
     pocsag_process(x, N);

@@ -1,4 +1,5 @@
 #include "ftx_decoder.h"
+#include "js8_decoder.h"
 
 // The project builds with -Og; this DSP runs on every sample of the analysis.
 #pragma GCC optimize("O2")
@@ -55,8 +56,13 @@ void decode_task(void *)
 
 } // namespace
 
+// JS8's text dictionary, embedded by src/CMakeLists.txt.
+extern const uint8_t jsc_dict_start[] asm("_binary_jsc_dict_bin_start");
+extern const uint8_t jsc_dict_end[] asm("_binary_jsc_dict_bin_end");
+
 void ftx_init()
 {
+    js8_set_dictionary(jsc_dict_start, jsc_dict_end - jsc_dict_start);
     ready = ftx_core_init(DSP_SAMPLE_RATE);
     if (!ready) {
         ESP_LOGE(TAG, "sem memoria para o FT8/FT4");

@@ -11,6 +11,9 @@
 #include "cw_decoder.h"
 #include "fax_decoder.h"
 #include "sstv_decoder.h"
+#include "skimmer.h"
+#include "qrss.h"
+#include "mfsk_decoder.h"
 #include "ftx_core.h"
 
 // Network built into the firmware for boards without a display. With the LCD
@@ -42,6 +45,12 @@ static void set_defaults()
     g_settings.fax_auto = true;
     g_settings.ftx_mode = 0;
     g_settings.sstv_adjust = false;
+    g_settings.skim_enabled = true;
+    g_settings.qrss_hz = QRSS_DEFAULT_HZ;
+    g_settings.mfsk_mode = MFSK_OFF;
+    g_settings.mfsk_tones = 32;
+    g_settings.mfsk_bw = 1000;
+    g_settings.mfsk_hz = MFSK_DEFAULT_HZ;
     g_settings.web_enabled = true;
     g_settings.lcd_brightness = 80;
     g_settings.monitor_volume = MONITOR_DEFAULT_VOL;
@@ -84,10 +93,22 @@ void settings_init()
         g_settings.fax_ioc = u32;
     if (nvs_get_u8(h, "fax_auto", &u8) == ESP_OK)
         g_settings.fax_auto = u8 != 0;
-    if (nvs_get_u8(h, "ftx_mode", &u8) == ESP_OK && u8 <= 2)
+    if (nvs_get_u8(h, "ftx_mode", &u8) == ESP_OK && u8 < FTX_PROTOCOLS)
         g_settings.ftx_mode = u8;
     if (nvs_get_u8(h, "sstv_adj", &u8) == ESP_OK)
         g_settings.sstv_adjust = u8 != 0;
+    if (nvs_get_u8(h, "skim_on", &u8) == ESP_OK)
+        g_settings.skim_enabled = u8 != 0;
+    if (nvs_get_u32(h, "qrss_hz", &u32) == ESP_OK && u32 >= 300 && u32 <= 3000)
+        g_settings.qrss_hz = u32;
+    if (nvs_get_u8(h, "mfsk_mode", &u8) == ESP_OK && u8 <= MFSK_CONTESTIA)
+        g_settings.mfsk_mode = u8;
+    if (nvs_get_u32(h, "mfsk_fmt", &u32) == ESP_OK && mfsk_valid(u32 >> 16, u32 & 0xFFFF)) {
+        g_settings.mfsk_tones = u32 >> 16;
+        g_settings.mfsk_bw = u32 & 0xFFFF;
+    }
+    if (nvs_get_u32(h, "mfsk_hz", &u32) == ESP_OK && u32 >= 300 && u32 <= 3000)
+        g_settings.mfsk_hz = u32;
     if (nvs_get_u8(h, "web_on", &u8) == ESP_OK)
         g_settings.web_enabled = u8 != 0;
     if (nvs_get_u8(h, "lcd_bl", &u8) == ESP_OK && u8 >= 5 && u8 <= 100)
@@ -141,6 +162,11 @@ void settings_save()
     nvs_set_u8(h, "fax_auto", g_settings.fax_auto ? 1 : 0);
     nvs_set_u8(h, "ftx_mode", (uint8_t)g_settings.ftx_mode);
     nvs_set_u8(h, "sstv_adj", g_settings.sstv_adjust ? 1 : 0);
+    nvs_set_u8(h, "skim_on", g_settings.skim_enabled ? 1 : 0);
+    nvs_set_u32(h, "qrss_hz", (uint32_t)g_settings.qrss_hz);
+    nvs_set_u8(h, "mfsk_mode", (uint8_t)g_settings.mfsk_mode);
+    nvs_set_u32(h, "mfsk_fmt", ((uint32_t)g_settings.mfsk_tones << 16) | (uint32_t)g_settings.mfsk_bw);
+    nvs_set_u32(h, "mfsk_hz", (uint32_t)g_settings.mfsk_hz);
     nvs_set_u8(h, "web_on", g_settings.web_enabled ? 1 : 0);
     nvs_set_u8(h, "lcd_bl", (uint8_t)g_settings.lcd_brightness);
     nvs_set_u8(h, "mon_vol", (uint8_t)g_settings.monitor_volume);
@@ -158,6 +184,9 @@ void settings_apply()
     fax_set_ioc(g_settings.fax_ioc);
     fax_set_auto(g_settings.fax_auto);
     sstv_set_auto_adjust(g_settings.sstv_adjust);
+    skimmer_set_enabled(g_settings.skim_enabled);
+    qrss_set_center(g_settings.qrss_hz);
+    mfsk_configure((MfskMode)g_settings.mfsk_mode, g_settings.mfsk_tones, g_settings.mfsk_bw, g_settings.mfsk_hz);
     ftx_core_set_protocol((FtxProtocol)g_settings.ftx_mode);
     audio_monitor_set_volume(g_settings.monitor_volume);
 }

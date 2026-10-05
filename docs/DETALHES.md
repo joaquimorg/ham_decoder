@@ -45,11 +45,12 @@ Máximo ~2,8 Vpp na entrada. Esquema, a ligação do PCM1808 e os GPIOs a evitar
 3. calcula FFT, ruído de fundo e picos;
 4. classifica o sinal (ruído, tom, CW, FSK/RTTY, voz);
 5. descodifica CW (Morse) no tom detetado e RTTY (Baudot, 45,45/50/75 baud) nos dois tons FSK detetados;
-6. descodifica imagens **FAX** (WEFAX 60/90/120/240 lpm, IOC 576/288; com squelch, mediana, seguimento do período da linha e resincronização em saltos, parâmetros `FAX_*` em `config.h`) e **SSTV** (Martin, Scottie, Robot, PD), e mensagens **FT8/FT4** (com a biblioteca [ft8_lib](components/ft8_lib/README.md));
-7. escreve no monitor série o texto CW e as mudanças de sinal; com `SERIAL_REPORT 2` em `config.h`, escreve também a linha completa do waterfall em texto a cada segundo;
-8. classifica o sinal também com um modelo **TinyML** (rede MLP int8, ver abaixo);
-9. mostra tudo no **LCD com touch** da Freenove (ver abaixo);
-10. serve uma **página web** por Wi-Fi com espectro, waterfall, classificação, texto CW/RTTY, imagens FAX/SSTV, mensagens FT8/FT4 e configuração. A página web é **opcional**.
+6. descodifica PSK31..500 e QPSK, APRS em VHF e HF, Olivia/Contestia, até 6 sinais CW/PSK31 em simultâneo, e mostra uma cascata QRSS;
+7. descodifica imagens **FAX** (WEFAX 60/90/120/240 lpm, IOC 576/288; com squelch, mediana, seguimento do período da linha e resincronização em saltos, parâmetros `FAX_*` em `config.h`) e **SSTV** (Martin, Scottie, Robot, PD), e mensagens **FT8/FT4** e **JS8** (com a biblioteca [ft8_lib](components/ft8_lib/README.md));
+8. escreve no monitor série o texto CW e as mudanças de sinal; com `SERIAL_REPORT 2` em `config.h`, escreve também a linha completa do waterfall em texto a cada segundo;
+9. classifica o sinal também com um modelo **TinyML** (rede MLP int8, ver abaixo);
+10. mostra tudo no **LCD com touch** da Freenove (ver abaixo);
+11. serve uma **página web** por Wi-Fi com espectro, waterfall, classificação, texto CW/RTTY, imagens FAX/SSTV, mensagens FT8/FT4 e configuração. A página web é **opcional**.
 
 Os descodificadores entregam o resultado a `src/ui_hub.cpp`. O LCD e a página web leem daí, cada um ao seu ritmo, e nenhum depende do outro.
 
@@ -236,6 +237,16 @@ Para juntar exemplos reais: `ML_LOG_FEATURES 1` e `ML_LOG_LABEL "CW"` em `config
 - [x] DCS: palavra Golay de 23 bits a 134,4 bit/s (DPLL, as duas polaridades), aceite quando se repete 3 vezes com 23 bits de intervalo; os códigos equivalentes da mesma palavra aparecem juntos (ex.: 023N = 047I)
 - [ ] validar com sinais reais
 
+### V0.13 - Modos de radioamador
+- [x] APRS em HF: segundo modem AFSK a 300 baud (1600/1800 Hz), as tramas aparecem com "HF"
+- [x] PSK250/PSK500 e QPSK31..500: código convolucional K = 5 (0x17, 0x19), Viterbi por troca de registos, as duas direções de fase (USB/LSB) com a que melhor encaixa no caminho; o PSK largo é tentado no centro da banda ocupada quando o classificador não o reconhece
+- [x] multicanal CW / PSK31 (`skimmer.cpp`): até 6 sinais estreitos com um recetor CW e um BPSK31 cada (squelch PSK mais exigente); linhas de CW com velocidade fora de 8..45 WPM, muitos `_` ou só letras soltas são descartadas; pares FSK com desvio de RTTY ficam de fora
+- [x] QRSS / DFCW (`qrss.cpp`): mistura para banda base, duas decimações de 8 (187,5 Hz), FFT de 512 pontos com 50 % de sobreposição: 0,37 Hz por ponto, uma coluna a cada 1,37 s; sub-separador QRSS no LCD e separador na página web
+- [x] Olivia / Contestia (`mfsk_decoder.cpp`): banda base a 4 kHz, FFT a cada meio símbolo, bits suaves com código Gray, desembaralhamento e FHT por cada fase de bloco e passo de sintonia (±2 tons), como o fldigi; compatibilidade verificada com o transmissor do fldigi no PC; a descodificação corre numa tarefa de baixa prioridade no núcleo 0 (enquanto procura só metade das fases, depois só a sintonia certa ±1)
+- [x] JS8 (`js8_decoder.cpp`): Costas, LDPC (174,87) e CRC-12 do JS8Call sobre o waterfall do ft8_lib; Normal/Fast/Turbo/Slow; heartbeat, composto, dirigido, dados Huffman e JSC (dicionário em `data/`)
+- [x] testes no PC para todos (`tools/host_test/run.sh aprs|psk|cw|qrss|skim|mfsk|js8`, em Linux/WSL) e o JS8 também em `tools/ftx_test`
+- [ ] validar com sinais reais
+
 ### Interface
 - [x] LCD: separador Texto com sub-separadores por canal (ponto = texto novo; tramas/mensagens com marcador)
 - [x] LCD RX: waterfall com a altura toda; por cima, para cada canal com texto recente, o nome do modo e 4 linhas
@@ -279,6 +290,11 @@ rx_analyzer/
 │   ├── fm_demod.h
 │   ├── fax_decoder.h
 │   ├── sstv_decoder.h
+│   ├── skimmer.h
+│   ├── qrss.h
+│   ├── fft.h
+│   ├── mfsk_decoder.h
+│   ├── js8_decoder.h
 │   ├── ftx_core.h
 │   ├── ftx_decoder.h
 │   ├── settings.h
@@ -309,8 +325,14 @@ rx_analyzer/
 │   ├── fm_demod.cpp     (discriminador FM para FAX e SSTV)
 │   ├── fax_decoder.cpp
 │   ├── sstv_decoder.cpp
-│   ├── ftx_core.cpp     (FT8/FT4: períodos e descodificação, sem ESP-IDF)
-│   ├── ftx_decoder.cpp  (FT8/FT4 na placa: hora UTC e tarefa de descodificação)
+│   ├── skimmer.cpp      (multicanal CW / PSK31)
+│   ├── qrss.cpp         (cascata QRSS / DFCW)
+│   ├── fft.cpp          (FFT complexa para o QRSS e o Olivia)
+│   ├── mfsk_decoder.cpp (Olivia / Contestia)
+│   ├── js8_decoder.cpp  (JS8: sincronismo, LDPC, CRC e texto)
+│   ├── js8_ldpc.inc     (código LDPC do JS8, gerado)
+│   ├── ftx_core.cpp     (FT8/FT4/JS8: períodos e descodificação, sem ESP-IDF)
+│   ├── ftx_decoder.cpp  (FT8/FT4/JS8 na placa: hora UTC e tarefa de descodificação)
 │   ├── capture.cpp
 │   ├── settings.cpp     (definições em NVS)
 │   ├── ui_hub.cpp       (dados para o LCD e para a página web)
@@ -321,7 +343,9 @@ rx_analyzer/
 │   ├── rtty_sim.py      (simulação do decoder RTTY e gerador de WAV de teste)
 │   ├── fax_sim.py       (simulação do decoder FAX e gerador de WAV de teste)
 │   ├── sstv_sim.py      (simulação do decoder SSTV e gerador de WAV de teste)
-│   ├── ftx_test/        (teste do FT8/FT4 no PC, em C++)
+│   ├── ftx_test/        (teste do FT8/FT4/JS8 no PC, em C++)
+│   ├── host_test/       (autotestes dos descodificadores no PC)
+│   ├── js8/             (gera as tabelas e o dicionário do JS8)
 │   ├── gen_fonts.sh     (gera as fontes do LCD)
 │   └── capture_to_wav.py
 └── docs/

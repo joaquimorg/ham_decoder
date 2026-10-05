@@ -17,8 +17,12 @@ Descodificador/analisador de sinais de rádio **autónomo**, baseado em ESP32-S3
 
 - **Espectro e waterfall** em tempo real, com deteção e classificação automática do sinal (ruído, tom, CW, RTTY/FSK, PSK31, voz), por heurística e por um modelo **TinyML** (MLP int8) a correr na própria placa.
 - **CW (Morse)** e **RTTY** (Baudot, 45,45 / 50 / 75 baud), com estimativa de WPM, AFC e polaridade automática.
-- **PSK31 / PSK63 / PSK125** (BPSK, Varicode), com deteção automática da velocidade e do centro do sinal, e AFC.
-- **APRS / AX.25 a 1200 baud** (AFSK), a partir do áudio de um recetor FM; só mostra tramas com CRC válido.
+- **PSK31 a PSK500** (BPSK) e **QPSK31 a QPSK500** (com correção de erros Viterbi, em USB ou LSB), com deteção automática do modo, da velocidade e do centro do sinal, e AFC.
+- **Multicanal CW / PSK31**: além do sinal principal, até 6 outros sinais estreitos descodificados ao mesmo tempo, uma linha por frase com a frequência.
+- **Olivia** e **Contestia** (todos os submodos de 4 a 64 tons, 125 a 2000 Hz; compatível com o fldigi).
+- **JS8 (JS8Call)** nas velocidades Normal, Fast, Turbo e Slow: heartbeats, CQ, comandos dirigidos e texto, incluindo o texto comprimido com o dicionário do JS8Call.
+- **QRSS / DFCW**: cascata lenta e estreita (0,37 Hz por ponto) para balizas de CW muito lento.
+- **APRS / AX.25 a 1200 baud** (AFSK), a partir do áudio de um recetor FM, e **APRS em HF a 300 baud** (1600/1800 Hz); só mostra tramas com CRC válido.
 - **DTMF**, **CTCSS** (subtons de 67,0 a 254,1 Hz) e **DCS**; o CTCSS e o DCS precisam de áudio abaixo de 300 Hz (saída de linha ou do discriminador).
 - **POCSAG** 512 / 1200 / 2400 baud (pagers), com correção BCH; pode ser desligado no `config.h` (`POCSAG_ENABLE`), porque receber mensagens de terceiros pode ser proibido por lei.
 - **FAX meteorológico (WEFAX)** e **SSTV** (Martin, Scottie, Robot, PD), com imagens apresentadas ao vivo. O FAX tem squelch, filtro de mediana, seguimento do período da linha e resincronização em saltos do sinal.
@@ -90,8 +94,12 @@ A **standalone** radio signal decoder/analyzer built on the ESP32-S3. It connect
 
 - Real-time **spectrum and waterfall**, with automatic signal detection and classification (noise, tone, CW, RTTY/FSK, PSK31, voice), using both heuristics and an on-device **TinyML** model (int8 MLP).
 - **CW (Morse)** and **RTTY** (Baudot, 45.45 / 50 / 75 baud), with WPM estimation, AFC and automatic polarity.
-- **PSK31 / PSK63 / PSK125** (BPSK, Varicode), with automatic speed and centre detection, and AFC.
-- **APRS / AX.25 at 1200 baud** (AFSK), from the audio of an FM receiver; only frames with a valid CRC are shown.
+- **PSK31 to PSK500** (BPSK) and **QPSK31 to QPSK500** (Viterbi error correction, USB or LSB), with automatic mode, speed and centre detection, and AFC.
+- **Multi-channel CW / PSK31**: besides the main signal, up to 6 other narrow signals decoded at once, one line per sentence with its frequency.
+- **Olivia** and **Contestia** (every submode from 4 to 64 tones, 125 to 2000 Hz; compatible with fldigi).
+- **JS8 (JS8Call)** at Normal, Fast, Turbo and Slow speed: heartbeats, CQs, directed commands and text, including the text compressed with JS8Call's dictionary.
+- **QRSS / DFCW**: a slow, narrow waterfall (0.37 Hz per point) for very slow CW beacons.
+- **APRS / AX.25 at 1200 baud** (AFSK), from the audio of an FM receiver, and **HF APRS at 300 baud** (1600/1800 Hz); only frames with a valid CRC are shown.
 - **DTMF**, **CTCSS** (67.0 to 254.1 Hz sub-tones) and **DCS**; CTCSS and DCS need audio below 300 Hz (line or discriminator output).
 - **POCSAG** 512 / 1200 / 2400 baud (pagers), with BCH correction; can be left out in `config.h` (`POCSAG_ENABLE`), as receiving third-party messages may be illegal.
 - **Weather FAX (WEFAX)** and **SSTV** (Martin, Scottie, Robot, PD), with live image display. FAX has squelch, noise median filtering, line-length tracking and resync after signal jumps.
@@ -159,4 +167,4 @@ Technical documentation is currently in Portuguese:
 
 ## Licença / License
 
-[MIT](LICENSE). A `ft8_lib` em `components/` tem a sua própria licença MIT. / [MIT](LICENSE). `components/ft8_lib` has its own MIT license.
+[MIT](LICENSE). A `ft8_lib` em `components/` tem a sua própria licença MIT. O dicionário do JS8 em `data/` vem do JS8Call (GPLv3): ver [data/README.md](data/README.md). / [MIT](LICENSE). `components/ft8_lib` has its own MIT license. The JS8 dictionary in `data/` comes from JS8Call (GPLv3): see [data/README.md](data/README.md).

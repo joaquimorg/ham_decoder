@@ -16,6 +16,12 @@ struct Settings {
     bool fax_auto;              // start on the APT start tone
     int ftx_mode;               // FtxProtocol: 0 off, 1 FT8, 2 FT4
     bool sstv_adjust;           // redraw SSTV images with the auto adjust
+    bool skim_enabled;          // multi-channel CW / PSK31
+    int qrss_hz;                // centre of the QRSS view (audio Hz)
+    int mfsk_mode;              // MfskMode: 0 off, 1 Olivia, 2 Contestia
+    int mfsk_tones;             // 4, 8, 16, 32, 64
+    int mfsk_bw;                // 125, 250, 500, 1000, 2000 Hz
+    int mfsk_hz;                // centre (audio Hz)
     bool web_enabled;           // Wi-Fi + web page (WEB_UI builds only)
     int lcd_brightness;         // backlight, 5..100 %
     int monitor_volume;         // speaker monitor, 0..100 % (AUDIO_MONITOR builds)

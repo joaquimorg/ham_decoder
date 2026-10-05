@@ -18,24 +18,25 @@
 namespace {
 
 constexpr float FS = (float)DSP_SAMPLE_RATE;
-constexpr float BAUD = 1200.0f;
-constexpr float MARK_HZ = 1200.0f, SPACE_HZ = 2200.0f;
-constexpr int SPB = (int)(DSP_SAMPLE_RATE / 1200);    // samples per bit (10 at 12 kHz)
+
+// The two modems: VHF/UHF FM (Bell 202) and HF SSB (300 baud, 200 Hz shift).
+struct ModemDef {
+    float baud, mark_hz, space_hz;
+    const char *tag;    // in front of each frame ("" = none)
+};
+constexpr ModemDef VHF = { 1200.0f, 1200.0f, 2200.0f, "" };
+constexpr ModemDef HF = { 300.0f, 1600.0f, 1800.0f, "HF " };
+constexpr int SPB_MAX = DSP_SAMPLE_RATE / 300;    // samples per bit (40 at 12 kHz)
 static_assert(DSP_SAMPLE_RATE % 1200 == 0, "a bit must be a whole number of samples");
 
 // Tone levels: each tone has its own peak and valley follower, so the
 // de-emphasis tilt of an FM receiver (2200 Hz several dB under 1200 Hz) does
-// not bias the decisions.
-constexpr float AGC_ATTACK = 0.3f, AGC_DECAY = 0.0003f;
+// not bias the decisions. Rates per bit, so both modems follow alike.
+constexpr float AGC_ATTACK = 0.3f, AGC_DECAY_PER_BIT = 0.003f;
 
 // Bit clock: a DPLL that overflows once per bit; at each transition of the
 // demodulated signal the phase is pulled towards the middle between samples.
 constexpr float PLL_INERTIA_LOCKED = 0.74f, PLL_INERTIA_SEARCH = 0.5f;
-
-// The mark - space difference is smoothed over SMOOTH samples (half a bit):
-// in tools-side simulation (noise, de-emphasis tilt) it decoded 22-29 frames
-// of 30 where the raw difference decoded 5-15.
-constexpr int SMOOTH = 5;
 
 constexpr int MIN_FRAME = 17;     // 2 addresses + control + FCS (supervisory frames)
 constexpr int MAX_FRAME = 340;    // up to 8 digipeaters + 256 bytes of information
@@ -43,15 +44,17 @@ constexpr int MAX_FRAME = 340;    // up to 8 digipeaters + 256 bytes of informat
 struct Tone {
     float wr = 1.0f, wi = 0.0f;    // per-sample rotation
     float cr = 1.0f, ci = 0.0f;    // oscillator
-    float ring_r[SPB] = {}, ring_i[SPB] = {};
+    float ring_r[SPB_MAX] = {}, ring_i[SPB_MAX] = {};
     float acc_r = 0.0f, acc_i = 0.0f;
     float peak = 0.0f, valley = 0.0f;
+    float decay = 0.0f;
 
-    void init(float hz)
+    void init(float hz, int spb)
     {
         const float w = 2.0f * (float)M_PI * hz / FS;
         wr = cosf(w);
         wi = -sinf(w);
+        decay = AGC_DECAY_PER_BIT / spb;
     }
 
     // Level of the tone over the last bit, normalised between its valley and peak.
@@ -66,8 +69,8 @@ struct Tone {
         ring_r[pos] = r;
         ring_i[pos] = i;
         const float m = sqrtf(acc_r * acc_r + acc_i * acc_i);
-        peak += (m > peak ? AGC_ATTACK : AGC_DECAY) * (m - peak);
-        valley += (m < valley ? AGC_ATTACK : AGC_DECAY) * (m - valley);
+        peak += (m > peak ? AGC_ATTACK : decay) * (m - peak);
+        valley += (m < valley ? AGC_ATTACK : decay) * (m - valley);
         const float span = peak - valley;
         return span > 1e-9f ? (m - valley) / span : 0.0f;
     }
@@ -80,32 +83,12 @@ struct Tone {
     }
 };
 
-Tone mark, space;
-int ring_pos = 0;
-float diff_ring[SMOOTH] = {};
-float diff_sum = 0.0f;
-int diff_pos = 0;
-
-int32_t pll = 0;
-constexpr int32_t PLL_STEP = (int32_t)(4294967296.0 * 1200.0 / DSP_SAMPLE_RATE);
-bool prev_level = false;     // demodulated: true = mark
-bool prev_raw = false;       // for NRZI
-int good_bits = 0;           // transitions near the expected place (lock indicator)
-
-// HDLC receiver.
-uint8_t pattern = 0;
-bool in_frame = false;
-int ones = 0;
-uint8_t acc = 0;
-int bitpos = 0;
-EXT_RAM_BSS_ATTR uint8_t frame[MAX_FRAME];
-int nbytes = 0;
-
 EXT_RAM_BSS_ATTR char text[APRS_TEXT_MAX];
 size_t text_len = 0;
 uint32_t frames_ok = 0;
 char last_src[12] = "";
 int64_t last_us = 0;
+bool last_hf = false;
 
 uint16_t fcs(const uint8_t *p, int n)
 {
@@ -135,103 +118,151 @@ void append(const char *s)
         text[text_len++] = *s++;
 }
 
-void frame_done()
-{
-    if (nbytes < MIN_FRAME)
-        return;
-    const uint16_t got = (uint16_t)(frame[nbytes - 2] | (frame[nbytes - 1] << 8));
-    if (fcs(frame, nbytes - 2) != got)
-        return;
-    const int len = nbytes - 2;
+// AFSK demodulator, bit clock and HDLC receiver for one modem.
+struct Modem {
+    const ModemDef *def = nullptr;
+    int spb = 0, smooth = 0;    // samples per bit; the tone difference is smoothed over half a bit
+    Tone mark, space;
+    int ring_pos = 0;
+    float diff_ring[SPB_MAX / 2] = {};
+    float diff_sum = 0.0f;
+    int diff_pos = 0;
 
-    // Every valid frame is shown: APRS interpreted, any other packet raw.
-    char stamp[16] = "";
-    utc_stamp(stamp, sizeof(stamp));
-    EXT_RAM_BSS_ATTR static char line[1024];
-    char src[12] = "";
-    if (aprs_format(frame, len, g_settings.language == LANG_EN, stamp, line, sizeof(line), src, sizeof(src)) <= 0)
-        return;
-    strlcpy(last_src, src, sizeof(last_src));
-    append(line);
-    frames_ok++;
-    last_us = esp_timer_get_time();
-}
+    int32_t pll = 0, pll_step = 0;
+    bool prev_level = false;     // demodulated: true = mark
+    bool prev_raw = false;       // for NRZI
+    int good_bits = 0;           // transitions near the expected place (lock indicator)
 
-void hdlc_bit(int bit)
-{
-    pattern = (uint8_t)((pattern >> 1) | (bit ? 0x80 : 0));
-    if (pattern == 0x7E) {    // flag: the bits since the last whole byte are its first 7
-        if (in_frame && bitpos == 7)
-            frame_done();
-        in_frame = true;
-        nbytes = 0;
-        bitpos = 0;
-        ones = 0;
-        return;
+    uint8_t pattern = 0;
+    bool in_frame = false;
+    int ones = 0;
+    uint8_t acc = 0;
+    int bitpos = 0;
+    uint8_t frame[MAX_FRAME];
+    int nbytes = 0;
+
+    // The smoothing over half a bit: in tools-side simulation (noise,
+    // de-emphasis tilt) it decoded 22-29 frames of 30 at 1200 baud where the
+    // raw difference decoded 5-15.
+    void init(const ModemDef &d)
+    {
+        def = &d;
+        spb = (int)(FS / d.baud + 0.5f);
+        smooth = spb / 2;
+        mark.init(d.mark_hz, spb);
+        space.init(d.space_hz, spb);
+        pll_step = (int32_t)(4294967296.0 * d.baud / DSP_SAMPLE_RATE);
     }
-    if (bit) {
-        if (++ones >= 7) {    // abort / idle
-            in_frame = false;
+
+    void frame_done()
+    {
+        if (nbytes < MIN_FRAME)
             return;
-        }
-    } else {
-        if (ones == 5) {      // stuffed zero
+        const uint16_t got = (uint16_t)(frame[nbytes - 2] | (frame[nbytes - 1] << 8));
+        if (fcs(frame, nbytes - 2) != got)
+            return;
+        const int len = nbytes - 2;
+
+        // Every valid frame is shown: APRS interpreted, any other packet raw.
+        char stamp[24] = "";
+        const int k = utc_stamp(stamp, sizeof(stamp));
+        strlcpy(stamp + k, def->tag, sizeof(stamp) - k);
+        EXT_RAM_BSS_ATTR static char line[1024];
+        char src[12] = "";
+        if (aprs_format(frame, len, g_settings.language == LANG_EN, stamp, line, sizeof(line), src, sizeof(src)) <= 0)
+            return;
+        strlcpy(last_src, src, sizeof(last_src));
+        append(line);
+        frames_ok++;
+        last_us = esp_timer_get_time();
+        last_hf = def == &HF;
+    }
+
+    void hdlc_bit(int bit)
+    {
+        pattern = (uint8_t)((pattern >> 1) | (bit ? 0x80 : 0));
+        if (pattern == 0x7E) {    // flag: the bits since the last whole byte are its first 7
+            if (in_frame && bitpos == 7)
+                frame_done();
+            in_frame = true;
+            nbytes = 0;
+            bitpos = 0;
             ones = 0;
             return;
         }
-        ones = 0;
+        if (bit) {
+            if (++ones >= 7) {    // abort / idle
+                in_frame = false;
+                return;
+            }
+        } else {
+            if (ones == 5) {      // stuffed zero
+                ones = 0;
+                return;
+            }
+            ones = 0;
+        }
+        if (!in_frame)
+            return;
+        acc = (uint8_t)((acc >> 1) | (bit ? 0x80 : 0));
+        if (++bitpos == 8) {
+            bitpos = 0;
+            if (nbytes < MAX_FRAME)
+                frame[nbytes++] = acc;
+            else
+                in_frame = false;
+        }
     }
-    if (!in_frame)
-        return;
-    acc = (uint8_t)((acc >> 1) | (bit ? 0x80 : 0));
-    if (++bitpos == 8) {
-        bitpos = 0;
-        if (nbytes < MAX_FRAME)
-            frame[nbytes++] = acc;
-        else
-            in_frame = false;
+
+    void process(const float *x, int n)
+    {
+        for (int i = 0; i < n; i++) {
+            const float m = mark.push(x[i], ring_pos);
+            const float s = space.push(x[i], ring_pos);
+            if (++ring_pos == spb)
+                ring_pos = 0;
+            const float d = m - s;
+            diff_sum += d - diff_ring[diff_pos];
+            diff_ring[diff_pos] = d;
+            if (++diff_pos == smooth)
+                diff_pos = 0;
+            const bool level = diff_sum > 0.0f;
+
+            const int32_t before = pll;
+            pll = (int32_t)((uint32_t)pll + (uint32_t)pll_step);
+            if (before > 0 && pll < 0) {    // middle of a bit
+                const int bit = level == prev_raw ? 1 : 0;    // NRZI: no change = 1
+                prev_raw = level;
+                hdlc_bit(bit);
+            }
+            if (level != prev_level) {
+                // A transition should fall where the phase is near 0.
+                const bool near = pll > -(pll_step * 2) && pll < pll_step * 2;
+                good_bits = near ? (good_bits < 64 ? good_bits + 1 : 64) : (good_bits > 0 ? good_bits - 1 : 0);
+                pll = (int32_t)(pll * (good_bits > 32 ? PLL_INERTIA_LOCKED : PLL_INERTIA_SEARCH));
+                prev_level = level;
+            }
+        }
+        mark.normalise();
+        space.normalise();
     }
-}
+};
+
+Modem modem_vhf;
+EXT_RAM_BSS_ATTR Modem modem_hf;    // the internal RAM is short
 
 }    // namespace
 
 void aprs_init()
 {
-    mark.init(MARK_HZ);
-    space.init(SPACE_HZ);
+    modem_vhf.init(VHF);
+    modem_hf.init(HF);
 }
 
 void aprs_process(const float *x, int n)
 {
-    for (int i = 0; i < n; i++) {
-        const float m = mark.push(x[i], ring_pos);
-        const float s = space.push(x[i], ring_pos);
-        if (++ring_pos == SPB)
-            ring_pos = 0;
-        const float d = m - s;
-        diff_sum += d - diff_ring[diff_pos];
-        diff_ring[diff_pos] = d;
-        if (++diff_pos == SMOOTH)
-            diff_pos = 0;
-        const bool level = diff_sum > 0.0f;
-
-        const int32_t before = pll;
-        pll = (int32_t)((uint32_t)pll + (uint32_t)PLL_STEP);
-        if (before > 0 && pll < 0) {    // middle of a bit
-            const int bit = level == prev_raw ? 1 : 0;    // NRZI: no change = 1
-            prev_raw = level;
-            hdlc_bit(bit);
-        }
-        if (level != prev_level) {
-            // A transition should fall where the phase is near 0.
-            const bool near = pll > -(PLL_STEP * 2) && pll < PLL_STEP * 2;
-            good_bits = near ? (good_bits < 64 ? good_bits + 1 : 64) : (good_bits > 0 ? good_bits - 1 : 0);
-            pll = (int32_t)(pll * (good_bits > 32 ? PLL_INERTIA_LOCKED : PLL_INERTIA_SEARCH));
-            prev_level = level;
-        }
-    }
-    mark.normalise();
-    space.normalise();
+    modem_vhf.process(x, n);
+    modem_hf.process(x, n);
 }
 
 size_t aprs_take_text(char *buf, size_t size)
@@ -248,6 +279,7 @@ size_t aprs_take_text(char *buf, size_t size)
 uint32_t aprs_frames() { return frames_ok; }
 const char *aprs_last_source() { return last_src; }
 int64_t aprs_last_us() { return last_us; }
+bool aprs_last_hf() { return last_hf; }
 
 #if APRS_SELFTEST
 
@@ -315,34 +347,38 @@ void aprs_selftest()
     for (int k = 0; k < 4; k++)
         flag();
 
-    struct Case { const char *name; float space_gain, noise, rate; };
+    struct Case { const ModemDef *m; const char *name; float space_gain, noise, rate, shift_hz; };
     static const Case CASES[] = {
-        { "limpo", 1.0f, 0.0f, 1.0f },
-        { "de-enfase -6 dB", 0.5f, 0.0f, 1.0f },
+        { &VHF, "limpo", 1.0f, 0.0f, 1.0f, 0.0f },
+        { &VHF, "de-enfase -6 dB", 0.5f, 0.0f, 1.0f, 0.0f },
         // Noise: sum of 4 uniforms x this (sigma = 1.15 x), white up to 6 kHz.
         // 0.05: Eb/N0 ~18 dB on mark; 0.08: ~14 dB; 0.11: ~11 dB.
         // With the -6 dB tilt the space tone is the weak one: at 0.06 an ideal
         // demodulator gets ~70% of the frames, so these are pass/fail checks
         // with margin, not limits.
-        { "de-enfase + ruido 0.05", 0.5f, 0.05f, 1.0f },
-        { "ruido 0.05 + taxa +1%", 0.7f, 0.05f, 1.01f },
-        { "plano + ruido 0.08", 1.0f, 0.08f, 1.0f },
+        { &VHF, "de-enfase + ruido 0.05", 0.5f, 0.05f, 1.0f, 0.0f },
+        { &VHF, "ruido 0.05 + taxa +1%", 0.7f, 0.05f, 1.01f, 0.0f },
+        { &VHF, "plano + ruido 0.08", 1.0f, 0.08f, 1.0f, 0.0f },
+        // HF: SSB mistuning moves both tones.
+        { &HF, "HF limpo", 1.0f, 0.0f, 1.0f, 0.0f },
+        { &HF, "HF ruido 0.1", 1.0f, 0.1f, 1.0f, 0.0f },
+        { &HF, "HF ruido 0.05 + 30 Hz", 1.0f, 0.05f, 1.0f, 30.0f },
     };
     EXT_RAM_BSS_ATTR static float block[FFT_SIZE];
     for (const Case &c : CASES) {
         const uint32_t before = aprs_frames();
-        char got[256] = "";
+        char got[512] = "";
         size_t got_len = 0;
         uint32_t rnd = 7;
         float phase = 0.0f, t_bit = 0.0f;
         bool tone_mark = true;
         int pos = 0, bi = 0;
-        const float bit_len = FS / (BAUD * c.rate);
+        const float bit_len = FS / (c.m->baud * c.rate);
         // NRZI: a 0 changes the tone, a 1 keeps it.
         if (bits[0] == 0)
             tone_mark = !tone_mark;
         for (int smp = 0; bi < nb; smp++) {
-            const float f = tone_mark ? MARK_HZ : SPACE_HZ;
+            const float f = (tone_mark ? c.m->mark_hz : c.m->space_hz) + c.shift_hz;
             phase += 2.0f * (float)M_PI * f / FS;
             if (phase > 2.0f * (float)M_PI)
                 phase -= 2.0f * (float)M_PI;

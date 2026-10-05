@@ -1,16 +1,19 @@
 #include <stdio.h>
 #include <inttypes.h>
+#include <algorithm>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
 
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "esp_system.h"
 
 #include "config.h"
 #include "analyzer.h"
+#include "mfsk_decoder.h"
 #include "audio_monitor.h"
 #include "audio_source.h"
 #include "board_i2c.h"
@@ -106,6 +109,20 @@ static void analysis_task(void *arg)
         analyzer_process_block(dsp_buffers[msg.index], msg.raw_peak, msg.overruns);
         load += ((esp_timer_get_time() - t0) / block_us - load) * 0.1f;
         ui_set_load(load);
+#if LOAD_LOG_S
+        static int64_t load_peak_us = 0, load_last_log = 0;
+        load_peak_us = std::max(load_peak_us, esp_timer_get_time() - t0);
+        if (t0 - load_last_log >= LOAD_LOG_S * 1000000LL) {
+            ESP_LOGW("LOAD", "analise %.0f %% (pico de um bloco %.0f %%), Olivia atrasou-se %u vezes", load * 100.0f,
+                     load_peak_us / block_us * 100.0f, (unsigned)mfsk_overruns());
+            ESP_LOGW("LOAD", "RAM interna livre %u KB (maior bloco %u KB)",
+                     (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+                     (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024));
+
+            load_last_log = t0;
+            load_peak_us = 0;
+        }
+#endif
         xQueueSend(free_queue, &msg.index, portMAX_DELAY);
         audio_source_log();
     }

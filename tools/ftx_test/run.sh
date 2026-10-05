@@ -17,5 +17,5 @@ for f in $LIB/ft8/constants.c $LIB/ft8/crc.c $LIB/ft8/decode.c $LIB/ft8/encode.c
     $CC -O2 -w -I$LIB -include "$OUT/shim.h" -c "$f" -o "$o"
     OBJS="$OBJS $o"
 done
-$CXX -O2 -std=c++17 -Iinclude -I$LIB src/ftx_core.cpp tools/ftx_test/ftx_test.cpp $OBJS -o "$OUT/ftx_test"
+$CXX -O2 -std=c++17 -Iinclude -I$LIB src/ftx_core.cpp src/js8_decoder.cpp tools/ftx_test/ftx_test.cpp $OBJS -o "$OUT/ftx_test"
 "$OUT/ftx_test"

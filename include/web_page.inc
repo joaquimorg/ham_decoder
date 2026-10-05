@@ -168,7 +168,10 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     <button data-tab="aprs">APRS</button>
     <button data-tab="pocsag" id="pgTab">POCSAG</button>
     <button data-tab="tones">DTMF / CTCSS</button>
-    <button data-tab="ftx">FT8 / FT4</button>
+    <button data-tab="mfsk">Olivia</button>
+    <button data-tab="skim">Multicanal</button>
+    <button data-tab="qrss">QRSS</button>
+    <button data-tab="ftx">FT8 / FT4 / JS8</button>
     <button data-tab="img">FAX / SSTV</button>
     <button data-tab="cfg">Definições</button>
   </nav>
@@ -250,7 +253,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
         </div>
       </div>
       <pre class="decoded" id="ptext"></pre>
-      <div class="note" style="margin-top: 8px">PSK31, PSK63 e PSK125 (BPSK): a velocidade e o centro do sinal são detetados automaticamente, com AFC.</div>
+      <div class="note" style="margin-top: 8px">PSK31 a PSK500 (BPSK) e QPSK31 a QPSK500 (com correção de erros Viterbi, em USB ou LSB): o modo, a velocidade e o centro do sinal são detetados automaticamente, com AFC.</div>
     </section>
   </div>
 
@@ -296,20 +299,83 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     </section>
   </div>
 
+  <div class="pane" data-pane="mfsk">
+    <section class="card">
+      <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+        <h2 style="margin: 0">Olivia / Contestia</h2>
+        <div class="row">
+          <button id="ocopy">Copiar</button>
+          <button id="oclear">Limpar</button>
+        </div>
+      </div>
+      <div class="row" style="margin-bottom: 8px; flex-wrap: wrap; gap: 8px">
+        <select id="mfskMode"><option value="0">Desligado</option><option value="1">Olivia</option><option value="2">Contestia</option></select>
+        <select id="mfskTones"><option>4</option><option>8</option><option>16</option><option>32</option><option>64</option></select>
+        <span>tons /</span>
+        <select id="mfskBw"><option>125</option><option>250</option><option>500</option><option>1000</option><option>2000</option></select>
+        <span>Hz, centro</span>
+        <input type="number" id="mfskHz" min="300" max="3000" step="10" style="width: 6em"> Hz
+        <span class="note" id="mfskInfo"></span>
+      </div>
+      <pre class="decoded" id="otext"></pre>
+      <div class="note" style="margin-top: 8px">O sinal não diz o submodo: escolhe os tons e a largura (32/1000, 16/500, 8/250… o mais usado é Olivia 32/1000 com o centro a 1500 Hz) e a frequência central. O descodificador procura a sintonia até meio espaçamento × 8 de cada lado e o ritmo dos blocos de correção de erros; só escreve quando o S/N de sincronismo passa de 3,4.</div>
+    </section>
+  </div>
+
+  <div class="pane" data-pane="skim">
+    <section class="card">
+      <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+        <h2 style="margin: 0">Multicanal CW / PSK31</h2>
+        <div class="row">
+          <button id="mcopy">Copiar</button>
+          <button id="mclear">Limpar</button>
+        </div>
+      </div>
+      <div class="row" style="margin-bottom: 8px">
+        <label><input type="checkbox" id="skimOn"> Ligado</label>
+        <span class="note" id="skimInfo"></span>
+      </div>
+      <pre class="decoded" id="mtext"></pre>
+      <div class="note" style="margin-top: 8px">Além do sinal que os descodificadores principais seguem, até 6 outros sinais estreitos do espetro são descodificados ao mesmo tempo, em CW e em PSK31: uma linha por frase, com a frequência e o modo. As linhas de CW que parecem ruído (só E, T, I soltos) não aparecem.</div>
+    </section>
+  </div>
+
+  <div class="pane" data-pane="qrss">
+    <section class="card">
+      <div class="row" style="justify-content: space-between; margin-bottom: 10px">
+        <h2 style="margin: 0">QRSS / DFCW</h2>
+        <div class="row">
+          <label>Centro <input type="number" id="qrssHz" min="300" max="3000" step="10" style="width: 6em"> Hz</label>
+          <button id="qclear">Limpar</button>
+        </div>
+      </div>
+      <div style="display: flex; gap: 6px">
+        <div id="qrssAxis" style="position: relative; width: 4.5em; height: 256px; font-size: 12px; color: var(--muted)"></div>
+        <canvas id="qrssc" width="900" height="256" style="flex: 1; min-width: 0; height: 256px; image-rendering: pixelated; background: #000"></canvas>
+      </div>
+      <div class="note" style="margin-top: 8px">Cascata lenta e estreita para balizas de CW muito lento (QRSS3, QRSS10, DFCW): 0,37 Hz por ponto, uma coluna a cada 1,4 s, o tempo a correr para a esquerda. Em 30 m, com o rádio em USB a 10,1387 MHz, as balizas (10,1400–10,1401 MHz) ficam perto dos 1400 Hz.</div>
+    </section>
+  </div>
+
   <div class="pane" data-pane="ftx">
     <section class="card">
       <div class="row" style="justify-content: space-between; margin-bottom: 10px">
-        <h2 style="margin: 0">FT8 / FT4</h2>
+        <h2 style="margin: 0">FT8 / FT4 / JS8</h2>
         <div class="row">
           <select id="ftxMode">
             <option value="0">Desligado</option>
             <option value="1">FT8</option>
             <option value="2">FT4</option>
+            <option value="3">JS8 Normal</option>
+            <option value="4">JS8 Fast</option>
+            <option value="5">JS8 Turbo</option>
+            <option value="6">JS8 Slow</option>
           </select>
           <button id="ftxClear">Limpar</button>
         </div>
       </div>
       <div class="note" id="ftxInfo" style="margin-bottom: 8px">-</div>
+      <div class="note" style="margin-bottom: 8px">JS8 (JS8Call): uma linha por quadro, como o JS8Call os mostra (heartbeats, CQ, comandos dirigidos, texto). Uma mensagem longa vem em vários quadros seguidos. As velocidades Normal (15 s), Fast (10 s), Turbo (6 s) e Slow (30 s) não se descodificam ao mesmo tempo: escolhe a que está em uso. Como o FT8, precisa da hora UTC certa.</div>
       <div class="ftx">
         <table>
           <thead><tr><th>UTC</th><th class="n">dB</th><th class="n">DT</th><th class="n">Hz</th><th>Mensagem</th></tr></thead>
@@ -407,9 +473,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   wf.width = BINS; wf.height = 300;
   const rowImg = wctx.createImageData(BINS, 1);
 
-  // Text channels in the order of UiTextChannel (CW, RTTY, PSK, APRS, POCSAG, DTMF/CTCSS): the
+  // Text channels in the order of UiTextChannel (CW, RTTY, PSK, APRS, POCSAG, DTMF/CTCSS, multi, Olivia): the
   // element each one goes to and the next sequence number wanted.
-  const TEXT_IDS = ['text', 'rtext', 'ptext', 'atext', 'gtext', 'dtext'];
+  const TEXT_IDS = ['text', 'rtext', 'ptext', 'atext', 'gtext', 'dtext', 'mtext', 'otext'];
   let binHz = 12000 / 1024, rSeq = 0, first = true;
   const tSeqs = TEXT_IDS.map(() => 0);
   let rtty = { mark: 0, space: 0 }, pskHz = 0;
@@ -442,6 +508,44 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       s.textContent = f;
       axis.appendChild(s);
     }
+  }
+
+  // QRSS: columns of 256 levels (lowest frequency first), the canvas
+  // scrolling left; colours scaled to each column's floor.
+  let qSeq = 0, qrssCenter = 0, qrssBin = 0;
+  function drawQrss(b64) {
+    if (!b64) return;
+    const c = $('qrssc'), g = c.getContext('2d'), raw = atob(b64), R = 256;
+    const n = Math.floor(raw.length / R);
+    if (!n) return;
+    g.drawImage(c, n, 0, c.width - n, c.height, 0, 0, c.width - n, c.height);
+    const img = g.createImageData(1, R), col = new Array(R);
+    for (let k = 0; k < n; k++) {
+      for (let r = 0; r < R; r++) col[r] = raw.charCodeAt(k * R + r);
+      const floor = col.slice().sort((a, b) => a - b)[R >> 1];
+      for (let r = 0; r < R; r++) {
+        let v = Math.round((col[r] - floor + 6) * 255 / 70);
+        v = v < 0 ? 0 : v > 255 ? 255 : v;
+        const y = R - 1 - r, o = y * 4;
+        img.data[o] = lut[v * 3]; img.data[o + 1] = lut[v * 3 + 1]; img.data[o + 2] = lut[v * 3 + 2]; img.data[o + 3] = 255;
+      }
+      g.putImageData(img, c.width - n + k, 0);
+    }
+  }
+  function qrssAxis(center, bin) {
+    if (center === qrssCenter && bin === qrssBin) return;
+    qrssCenter = center; qrssBin = bin;
+    const ax = $('qrssAxis');
+    ax.innerHTML = '';
+    for (let off = -40; off <= 40; off += 10) {
+      const y = 128 - off / bin;
+      if (y < 6 || y > 250) continue;
+      const s = document.createElement('div');
+      s.style.cssText = `position: absolute; right: 0; top: ${y - 7}px`;
+      s.textContent = (center + off) + ' Hz';
+      ax.appendChild(s);
+    }
+    if (document.activeElement !== $('qrssHz')) $('qrssHz').value = center;
   }
 
   function decodeRow(b64) {
@@ -528,9 +632,20 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     if (document.activeElement !== $('faxIoc')) $('faxIoc').value = String(d.fax_ioc);
     $('faxAuto').checked = d.fax_auto;
     $('sstvAdjust').checked = d.sstv_adjust;
+    drawQrss(d.ql);
+    if (d.qs !== undefined) qSeq = d.qs;
+    if (d.qhz) qrssAxis(d.qhz, d.qbin);
+    const editing = ['mfskMode', 'mfskTones', 'mfskBw', 'mfskHz'].includes(document.activeElement && document.activeElement.id);
+    if (!editing && d.mfsk_mode !== undefined) {
+      $('mfskMode').value = d.mfsk_mode; $('mfskTones').value = d.mfsk_tones;
+      $('mfskBw').value = d.mfsk_bw; $('mfskHz').value = d.mfsk_hz;
+    }
+    $('mfskInfo').textContent = d.mfsk_mode ? (d.mfsk_on ? `a escrever, S/N ${d.mfsk_snr.toFixed(1)}` : `S/N ${d.mfsk_snr.toFixed(1)}`) : '';
+    $('skimOn').checked = d.skim_on;
+    $('skimInfo').textContent = d.skim_on ? `${d.skim} canal(is) em uso` : '';
     showFtx(d);
     if (d.gal !== galSeq) loadGallery(d.gal);
-    const live = { cw: !!d.tone, rtty: !!d.rtty_on, psk: !!d.psk_on, aprs: !!d.aprs_on, pocsag: !!d.pg_on, tones: !!d.ctcss || d.dcs >= 0, ftx: d.ftx_mode > 0 && d.ftx_time,
+    const live = { cw: !!d.tone, rtty: !!d.rtty_on, psk: !!d.psk_on, aprs: !!d.aprs_on, pocsag: !!d.pg_on, tones: !!d.ctcss || d.dcs >= 0, skim: d.skim > 0, mfsk: !!d.mfsk_on, ftx: d.ftx_mode > 0 && d.ftx_time,
                    img: d.fax_state > 0 || d.sstv_rx };
     for (const b of document.querySelectorAll('#tabs button')) b.classList.toggle('live', !!live[b.dataset.tab]);
     faxState = d.fax_state;
@@ -616,7 +731,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     const ctl = new AbortController();
     const guard = setTimeout(() => ctl.abort(), 5000);
     try {
-      const res = await fetch(`/api/data?r=${rSeq}&s=${tSeqs.join(',')}`, { cache: 'no-store', signal: ctl.signal });
+      const res = await fetch(`/api/data?r=${rSeq}&q=${qSeq}&s=${tSeqs.join(',')}`, { cache: 'no-store', signal: ctl.signal });
       update(await res.json());
       setLink(true, 'ao vivo (pedidos)');
       schedule(400);    // ~2.5 requests/s: fewer Wi-Fi bursts, same waterfall
@@ -679,6 +794,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   copyButton('gcopy', 'gtext');
   $('gclear').onclick = () => { $('gtext').textContent = ''; };
   copyButton('dcopy', 'dtext');
+  copyButton('mcopy', 'mtext');
+  $('mclear').onclick = () => { $('mtext').textContent = ''; };
   $('dclear').onclick = () => { $('dtext').textContent = ''; };
   $('baud').onchange = () => postConfig({ rtty_baud: $('baud').value });
   $('pol').onchange = () => postConfig({ rtty_pol: $('pol').value });
@@ -949,6 +1066,14 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   $('faxIoc').onchange = () => postConfig({ fax_ioc: $('faxIoc').value });
   $('faxAuto').onchange = () => postConfig({ fax_auto: $('faxAuto').checked ? 1 : 0 });
   $('sstvAdjust').onchange = () => postConfig({ sstv_adjust: $('sstvAdjust').checked ? 1 : 0 });
+  $('skimOn').onchange = () => postConfig({ skim_on: $('skimOn').checked ? 1 : 0 });
+  copyButton('ocopy', 'otext');
+  $('oclear').onclick = () => { $('otext').textContent = ''; };
+  const mfskSend = () => postConfig({ mfsk_mode: $('mfskMode').value, mfsk_tones: $('mfskTones').value,
+                                      mfsk_bw: $('mfskBw').value, mfsk_hz: Math.round(+$('mfskHz').value) });
+  for (const id of ['mfskMode', 'mfskTones', 'mfskBw', 'mfskHz']) $(id).onchange = mfskSend;
+  $('qrssHz').onchange = () => postConfig({ qrss_hz: Math.round(+$('qrssHz').value) });
+  $('qclear').onclick = () => { const c = $('qrssc'); c.getContext('2d').clearRect(0, 0, c.width, c.height); };
 
   $('wifi').onsubmit = async ev => {
     ev.preventDefault();

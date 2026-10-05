@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "ftx_core.h"
+#include "js8_decoder.h"
 #include <ft8/constants.h>
 #include <ft8/encode.h>
 #include <ft8/message.h>
@@ -147,6 +148,77 @@ static int run(const char *name, FtxProtocol proto, const std::vector<Tx> &txs, 
     return fails;
 }
 
+// JS8: frames (packed as tools/host_test/main_js8.cpp packs them) as plain
+// 8-FSK at the start delay of the speed, through ftx_core like the firmware.
+struct Js8Tx {
+    int slot;
+    uint8_t payload[9];
+    int i3;
+    const char *text;
+    float freq, snr_db;
+};
+
+static int run_js8(const char *name, FtxProtocol proto, const std::vector<Js8Tx> &txs, int n_slots, double t_start,
+                   float noise_rms, unsigned seed)
+{
+    const Js8SubmodeInfo &si = js8_submode((Js8Submode)(proto - FTX_JS8));
+    const double period = si.slot;
+    const double first_slot = ceil(t_start / period) * period;
+    const int n = (int)((first_slot - t_start + n_slots * period + 1.0) * FS);
+    std::vector<float> x(n, 0.0f);
+    std::mt19937 rng(seed);
+    std::normal_distribution<float> gauss(0.0f, noise_rms);
+    for (float &v : x)
+        v = gauss(rng);
+    const float pn = noise_rms * noise_rms * 2500.0f / (FS / 2.0f);
+    for (const Js8Tx &t : txs) {
+        uint8_t tones[79];
+        js8_encode(t.payload, t.i3, si.original_costas, tones);
+        const int sps = (int)lroundf(si.symbol_period * FS);
+        const float amp = sqrtf(2.0f * pn * powf(10.0f, t.snr_db / 10.0f));
+        const int at = (int)((first_slot + t.slot * period + si.start_delay - t_start) * FS);
+        double ph = 0.0;
+        for (int s = 0; s < 79; s++)
+            for (int i = 0; i < sps; i++) {
+                ph = fmod(ph + 2 * M_PI * (t.freq + tones[s] / si.symbol_period) / FS, 2 * M_PI);
+                if (at + s * sps + i < n)
+                    x[at + s * sps + i] += amp * (float)sin(ph);
+            }
+    }
+    got.clear();
+    ftx_core_set_protocol(proto);
+    for (int i = 0; i + BLOCK <= n; i += BLOCK) {
+        double slot = 0;
+        const int h = ftx_core_feed(&x[i], BLOCK, t_start + (double)i / FS, &slot);
+        if (h >= 0) {
+            ftx_core_decode(h, slot, on_msg, nullptr);
+            ftx_core_release(h);
+        }
+    }
+    printf("%s\n", name);
+    int fails = 0;
+    for (const Js8Tx &t : txs) {
+        const Rx *r = nullptr;
+        for (const Rx &g : got)
+            if (fabs(g.m.slot_start - (first_slot + t.slot * period)) < 0.01 && strstr(g.m.text, t.text) == g.m.text)
+                r = &g;
+        if (!r) {
+            printf("  FALTA  %-30s %6.0f Hz  snr %5.1f\n", t.text, t.freq, t.snr_db);
+            fails++;
+            continue;
+        }
+        const bool ok = fabsf(r->m.freq_hz - t.freq) < 4.0f && fabsf(r->m.dt) < 0.1f && fabsf(r->m.snr_db - t.snr_db) < 2.5f;
+        printf("  %s %-30s %6.1f Hz (%6.0f)  snr %5.1f (%5.1f)  dt %+.2f\n", ok ? "ok    " : "ERRADO", r->m.text,
+               r->m.freq_hz, t.freq, r->m.snr_db, t.snr_db, r->m.dt);
+        fails += !ok;
+    }
+    if (got.size() != txs.size()) {
+        printf("  %zu mensagens, esperadas %zu\n", got.size(), txs.size());
+        fails++;
+    }
+    return fails;
+}
+
 int main()
 {
     if (!ftx_core_init(FS)) {
@@ -169,6 +241,14 @@ int main()
                    { 1, "EA1ABC CT1XYZ RR73", 2200.0f, -10.0f, -0.1f } },
                  3, 1790000002.0, 0.05f, 3);
     fails += run("FT8: so ruido", FTX_FT8, {}, 4, t0, 0.1f, 4);
+    const std::vector<Js8Tx> js8 = {
+        { 0, { 0x06, 0x4F, 0x1D, 0xCB, 0x84, 0x75, 0x62, 0x14, 0xC0 }, 1, "CT1ABC: @HB HEARTBEAT IM58", 900.0f, -10.0f },
+        { 0, { 0x6A, 0xD1, 0xB9, 0x8C, 0xAD, 0x2D, 0xB5, 0x99, 0x18 }, 0, "CT1ABC: CT2XYZ SNR -07", 1500.0f, -14.0f },
+        { 1, { 0x87, 0x33, 0xCF, 0xEF, 0x58, 0x57, 0xFF, 0xFF, 0xFF }, 2, "HELLO 73", 1200.0f, -12.0f },
+    };
+    fails += run_js8("JS8 Normal", FTX_JS8, js8, 3, t0, 0.05f, 5);
+    fails += run_js8("JS8 Turbo", FTX_JS8_TURBO, js8, 3, 1790000001.1, 0.05f, 6);
+    fails += run_js8("JS8 Slow", FTX_JS8_SLOW, js8, 3, 1790000012.0, 0.05f, 7);
     printf("slots perdidos: %d\n%s\n", ftx_core_skipped(), fails ? "FALHOU" : "OK");
     return fails ? 1 : 0;
 }

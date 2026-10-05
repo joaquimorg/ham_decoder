@@ -7,6 +7,7 @@
 #include <string.h>
 #include <math.h>
 #include <algorithm>
+#include <new>
 
 #include "config.h"
 
@@ -21,12 +22,10 @@ constexpr float TICKS_PER_S = 1000.0f / CW_TICK_MS;
 
 // The envelope is integrated over the last `w` ticks, w ~ dit / 3, so slower
 // CW gets a narrower detection bandwidth (20 WPM: 20 ms, ~50 Hz).
-constexpr int WIN_MAX = 4;          // 20 ms cap, see CW_DEBOUNCE_MAX_TICKS
 constexpr float WIN_DIV = 3.0f;
 
 // Mark/space levels come from percentiles of the recent envelope, so a missed
 // mark never leaks into the noise estimate.
-constexpr int HIST = (int)(1.5f * TICKS_PER_S);
 constexpr float FLOOR_P = 0.20f;    // spaces dominate CW airtime
 constexpr float TOP_P = 0.95f;
 constexpr int LEVEL_EVERY = 20;     // ticks between level updates when locked on
@@ -57,58 +56,15 @@ const MorseCode morse_table[] = {
     {"-.--.-", ')'}, {".----.", '\''}, {".-..-.", '"'}, {"...-.-", '*'}, // SK -> '*'
 };
 
-// Tuning (NCO) and per-tick quadrature sums.
-float tone_hz = 0.0f;
-float phase = 0.0f;
-float phase_inc = 0.0f;
-float acc_i = 0.0f, acc_q = 0.0f;
-int acc_n = 0;
-float ring_i[WIN_MAX], ring_q[WIN_MAX];
-int ring_pos = 0;
+} // namespace
 
-// Envelope history and levels.
-float hist[HIST];
-float sorted_hist[HIST];
-int hist_len = 0, hist_pos = 0;
-float floor_level = 0.0f, top_level = 0.0f;
-int ticks = 0;
-
-// Keying state (in ticks).
-bool key_down = false;
-int pending = 0;          // ticks the raw decision has disagreed with key_down
-int run_ticks = 0;        // length of the current mark or space
-bool carrier = false;     // current mark is too long to be Morse
-
-// Dits and dahs are tracked as two clusters split at their geometric mean, so a
-// dah never drags the dit estimate. A single estimate ran away on real audio
-// (30 WPM drifting to 6 WPM): once it rose, 120 ms dahs counted as dits and
-// pushed it further up.
-float dit_ticks = DIT_START_TICKS;
-float dah_ticks = 3.0f * DIT_START_TICKS;
-
-float min_contrast = CW_MIN_CONTRAST;    // runtime-adjustable (web settings)
-
-char symbol[8];
-int symbol_len = 0;
-bool symbol_overflow = false;     // more elements than any Morse character
-
-// Per-report statistics for CW_DEBUG.
-struct {
-    int marks, dahs, carriers, chars, usable_ticks, ticks;
-    int mark_min, mark_max, space_min;
-} stats;
-bool word_gap_sent = true;
-
-char text[CW_TEXT_MAX + 1];
-size_t text_len = 0;
-
-void emit(char c)
+void CwReceiver::emit(char c)
 {
     if (text_len < CW_TEXT_MAX)
         text[text_len++] = c;
 }
 
-void flush_symbol()
+void CwReceiver::flush_symbol()
 {
     if (symbol_len == 0 && !symbol_overflow)
         return;
@@ -129,15 +85,12 @@ void flush_symbol()
     word_gap_sent = false;
 }
 
-// Share of recent samples shorter than half their estimate.
-float short_share = 0.0f;
-
 // Moves an estimate a quarter of the way to a sample (at most double it). A
 // sample under half the estimate is a glitch (noise burst) while such samples
 // are rare: it is ignored, or a stream of blips walks the dit estimate down
 // to the 60 WPM floor (seen on the board: 30 WPM CW decoded as "T T TT").
 // When they become common the estimate itself is too slow, and they count.
-float learn(float est, float len)
+float CwReceiver::learn(float est, float len)
 {
     const bool is_short = len < 0.5f * est;
     short_share += ((is_short ? 1.0f : 0.0f) - short_share) * 0.1f;
@@ -151,7 +104,7 @@ float learn(float est, float len)
 }
 
 // Morse dahs are ~3 dits: keep the clusters between 2x and 4x apart.
-void keep_ratio()
+void CwReceiver::keep_ratio()
 {
     if (dit_ticks < DIT_MIN_TICKS) dit_ticks = DIT_MIN_TICKS;
     if (dit_ticks > DIT_MAX_TICKS) dit_ticks = DIT_MAX_TICKS;
@@ -159,7 +112,7 @@ void keep_ratio()
     if (dah_ticks > 4.0f * dit_ticks) dah_ticks = 4.0f * dit_ticks;
 }
 
-void end_mark(int len)
+void CwReceiver::end_mark(int len)
 {
     if (carrier) {
         carrier = false;
@@ -189,7 +142,7 @@ void end_mark(int len)
     keep_ratio();
 }
 
-void end_space(int len)
+void CwReceiver::end_space(int len)
 {
     if (stats.space_min == 0 || len < stats.space_min)
         stats.space_min = len;
@@ -201,7 +154,7 @@ void end_space(int len)
 }
 
 // Called every tick while the key is up, with the space length so far.
-void space_tick(int len)
+void CwReceiver::space_tick(int len)
 {
     if ((symbol_len > 0 || symbol_overflow) && len >= 2.0f * dit_ticks)
         flush_symbol();
@@ -211,21 +164,21 @@ void space_tick(int len)
     }
 }
 
-float percentile(int n, float p)
+float CwReceiver::percentile(int n, float p)
 {
     const int k = (int)(p * (n - 1));
     std::nth_element(sorted_hist, sorted_hist + k, sorted_hist + n);
     return sorted_hist[k];
 }
 
-void update_levels()
+void CwReceiver::update_levels()
 {
     memcpy(sorted_hist, hist, hist_len * sizeof(float));
     floor_level = percentile(hist_len, FLOOR_P);
     top_level = percentile(hist_len, TOP_P);
 }
 
-void envelope_tick(float mag)
+void CwReceiver::envelope_tick(float mag)
 {
     ticks++;
     hist[hist_pos] = mag;
@@ -291,7 +244,7 @@ void envelope_tick(float mag)
     }
 }
 
-void reset_state()
+void CwReceiver::reset_state()
 {
     acc_i = acc_q = 0.0f;
     acc_n = 0;
@@ -311,67 +264,78 @@ void reset_state()
     short_share = 0.0f;
 }
 
-} // namespace
-
-void cw_init()
+CwReceiver::CwReceiver()
 {
-    tone_hz = 0.0f;
-    text_len = 0;
     dit_ticks = DIT_START_TICKS;
     dah_ticks = 3.0f * DIT_START_TICKS;
     reset_state();
 }
 
-void cw_set_tone(float hz)
+void CwReceiver::set_tone(float hz)
 {
     if (hz <= 0.0f) {
-        if (tone_hz > 0.0f) {
+        if (tone > 0.0f) {
             flush_symbol();
-            tone_hz = 0.0f;
+            tone = 0.0f;
             reset_state();
         }
         return;
     }
     // Small drifts are fine inside the detection bandwidth.
-    if (tone_hz > 0.0f && fabsf(hz - tone_hz) < CW_RETUNE_HZ)
+    if (tone > 0.0f && fabsf(hz - tone) < CW_RETUNE_HZ)
         return;
-    if (tone_hz == 0.0f)
+    if (tone == 0.0f) {
         reset_state();
-    tone_hz = hz;
-    phase_inc = 2.0f * (float)M_PI * hz / DSP_SAMPLE_RATE;
+        osc_r = 1.0f;
+        osc_i = 0.0f;
+    }
+    tone = hz;
+    const float w = 2.0f * (float)M_PI * hz / DSP_SAMPLE_RATE;
+    rot_r = cosf(w);
+    rot_i = sinf(w);
 }
 
-void cw_set_min_contrast(float ratio)
+void CwReceiver::set_min_contrast(float ratio)
 {
     if (ratio < 1.5f) ratio = 1.5f;
     if (ratio > 20.0f) ratio = 20.0f;
     min_contrast = ratio;
 }
 
-float cw_tone_hz()
+float CwReceiver::tone_hz() const
 {
-    return tone_hz;
+    return tone;
 }
 
-float cw_wpm()
+float CwReceiver::wpm() const
 {
     return 1200.0f / (dit_ticks * CW_TICK_MS);
 }
 
-void cw_process(const float *x, int n)
+bool CwReceiver::usable() const
 {
-    if (tone_hz <= 0.0f)
+    return top_level > floor_level * min_contrast;
+}
+
+void CwReceiver::process(const float *x, int n)
+{
+    if (tone <= 0.0f)
         return;
 
     for (int i = 0; i < n; i++) {
-        acc_i += x[i] * cosf(phase);
-        acc_q += x[i] * sinf(phase);
-        phase += phase_inc;
-        if (phase > 2.0f * (float)M_PI)
-            phase -= 2.0f * (float)M_PI;
+        acc_i += x[i] * osc_r;
+        acc_q += x[i] * osc_i;
+        const float r = osc_r * rot_r - osc_i * rot_i;
+        osc_i = osc_r * rot_i + osc_i * rot_r;
+        osc_r = r;
 
         if (++acc_n < TICK)
             continue;
+
+        // Keep |osc| = 1 (once per tick is plenty).
+        const float g = 1.0f / sqrtf(osc_r * osc_r + osc_i * osc_i);
+        osc_r *= g;
+        osc_i *= g;
 
         ring_i[ring_pos] = acc_i;
         ring_q[ring_pos] = acc_q;
@@ -392,7 +356,7 @@ void cw_process(const float *x, int n)
     }
 }
 
-size_t cw_take_text(char *buf, size_t size)
+size_t CwReceiver::take_text(char *buf, size_t size)
 {
     if (size == 0)
         return 0;
@@ -403,7 +367,7 @@ size_t cw_take_text(char *buf, size_t size)
     return n;
 }
 
-size_t cw_debug_line(char *buf, size_t size)
+size_t CwReceiver::debug_line(char *buf, size_t size)
 {
     const int n = snprintf(buf, size,
         "cw: dit %.0f ms, traco %.0f ms | marcas %d (tracos %d, %d..%d ms) espaco min %d ms | portadora %d | chars %d | "
@@ -416,3 +380,26 @@ size_t cw_debug_line(char *buf, size_t size)
     memset(&stats, 0, sizeof(stats));
     return n > 0 ? (size_t)n : 0;
 }
+
+// ---------------------------------------------------------------------------
+// The main decoder.
+
+static CwReceiver main_cw;
+
+void cw_init()
+{
+    // Rebuilt in place (no copy of the ~2.5 KB object on the stack); the
+    // contrast may already have come from the settings.
+    CwReceiver *const rx = &main_cw;
+    const float contrast = main_cw.min_contrast_value();
+    rx->~CwReceiver();
+    new (rx) CwReceiver();
+    rx->set_min_contrast(contrast);
+}
+void cw_set_tone(float hz) { main_cw.set_tone(hz); }
+void cw_set_min_contrast(float ratio) { main_cw.set_min_contrast(ratio); }
+float cw_tone_hz() { return main_cw.tone_hz(); }
+float cw_wpm() { return main_cw.wpm(); }
+void cw_process(const float *x, int n) { main_cw.process(x, n); }
+size_t cw_take_text(char *buf, size_t size) { return main_cw.take_text(buf, size); }
+size_t cw_debug_line(char *buf, size_t size) { return main_cw.debug_line(buf, size); }

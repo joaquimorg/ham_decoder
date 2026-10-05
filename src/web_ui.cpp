@@ -31,6 +31,8 @@
 #include "sstv_decoder.h"
 #include "ftx_decoder.h"
 #include "analyzer.h"
+#include "qrss.h"
+#include "mfsk_decoder.h"
 #include "esp_netif_sntp.h"
 #include <sys/time.h>
 #include <time.h>
@@ -42,6 +44,7 @@ static const char *TAG = "WEB";
 #define ROWS 64                 // spectrum rows a client can get at once
 #define TEXT_RING UI_TEXT_RING
 #define FTX_RING UI_FTX_RING
+#define WEB_QRSS_MAX 48         // QRSS columns a client can get at once (66 s)
 #define IMG_TITLE 32
 
 // ---------------------------------------------------------------------------
@@ -314,13 +317,17 @@ struct Snapshot {
     int nrows;
     uint8_t rows[ROWS][UI_BINS];
     char text[UI_TEXT_COUNT][TEXT_RING + 1];
+    uint32_t qseq;                    // after these QRSS columns
+    int nqrss;
+    uint8_t qrss[WEB_QRSS_MAX][UI_QRSS_BINS];
     UiStatus st;
 };
 EXT_RAM_BSS_ATTR static Snapshot snap;    // used only from the HTTP server task
 
 // A new client (want_row 0) starts with the last 16 rows.
-static void take_snapshot(uint32_t want_row, const uint32_t *want_text)
+static void take_snapshot(uint32_t want_row, const uint32_t *want_text, uint32_t want_qrss)
 {
+    snap.nqrss = ui_get_qrss(want_qrss, snap.qrss, WEB_QRSS_MAX, &snap.qseq);
     snap.nrows = ui_get_rows(want_row, snap.rows, want_row ? ROWS : 16, &snap.rseq);
     for (int c = 0; c < UI_TEXT_COUNT; c++)
         ui_get_text((UiTextChannel)c, want_text[c], snap.text[c], &snap.tseq[c]);
@@ -344,6 +351,14 @@ static int format_json(bool with_rows, char *json, size_t cap)
         n += json_str(json + n, cap - n, snap.text[c]);
     }
     n += snprintf(json + n, cap - n, "]");
+    // QRSS columns since the last poll, base64 (UI_QRSS_BINS bytes each).
+    n += snprintf(json + n, cap - n, ",\"qs\":%" PRIu32 ",\"qhz\":%d,\"qbin\":%.4f,\"ql\":\"", snap.qseq,
+                  g_settings.qrss_hz, qrss_bin_hz());
+    if (snap.nqrss > 0 && cap - n > (size_t)(snap.nqrss * UI_QRSS_BINS / 3 * 4 + 16)) {
+        base64_encode(&snap.qrss[0][0], snap.nqrss * UI_QRSS_BINS, json + n);
+        n += strlen(json + n);
+    }
+    n += snprintf(json + n, cap - n, "\"");
     if (with_rows) {
         n += snprintf(json + n, cap - n, ",\"rows\":[");
         for (int i = 0; i < snap.nrows; i++) {
@@ -401,6 +416,12 @@ static int format_json(bool with_rows, char *json, size_t cap)
                   fs > 0.0f ? (fs / DSP_SAMPLE_RATE - 1.0f) * 1e6f : 0.0f, fs > 0.0f ? "true" : "false");
     n += snprintf(json + n, cap - n, ",\"gal\":%" PRIu32 ",\"sstv_adjust\":%s", ui_gallery_seq(),
                   g_settings.sstv_adjust ? "true" : "false");
+    n += snprintf(json + n, cap - n, ",\"skim\":%d,\"skim_on\":%s", st.skim_channels,
+                  g_settings.skim_enabled ? "true" : "false");
+    n += snprintf(json + n, cap - n,
+                  ",\"mfsk_on\":%s,\"mfsk_snr\":%.1f,\"mfsk_mode\":%d,\"mfsk_tones\":%d,\"mfsk_bw\":%d,\"mfsk_hz\":%d",
+                  st.mfsk_active ? "true" : "false", st.mfsk_snr, g_settings.mfsk_mode, g_settings.mfsk_tones,
+                  g_settings.mfsk_bw, g_settings.mfsk_hz);
     n += snprintf(json + n, cap - n,
                   ",\"ftx_mode\":%d,\"ftx_time\":%s,\"ftx_n\":%d,\"ftx_ms\":%d,\"ftx_lost\":%d,\"utc\":%lld",
                   g_settings.ftx_mode, ftx_time_ok() ? "true" : "false", ftx_last_count(), ftx_last_ms(),
@@ -416,11 +437,13 @@ EXT_RAM_BSS_ATTR static char json_buf[36 * 1024];    // HTTP server task only (P
 // Polling fallback for browsers where the WebSocket does not work.
 static esp_err_t handle_data(httpd_req_t *req)
 {
-    uint32_t want_row = 0, want_text[UI_TEXT_COUNT] = {};
+    uint32_t want_row = 0, want_text[UI_TEXT_COUNT] = {}, want_qrss = 0;
     char q[160], v[120];
     if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK) {
         if (httpd_query_key_value(q, "r", v, sizeof(v)) == ESP_OK)
             want_row = strtoul(v, nullptr, 10);
+        if (httpd_query_key_value(q, "q", v, sizeof(v)) == ESP_OK)
+            want_qrss = strtoul(v, nullptr, 10);
         if (httpd_query_key_value(q, "s", v, sizeof(v)) == ESP_OK) {
             const char *p = v;
             for (int c = 0; c < UI_TEXT_COUNT && *p; c++) {
@@ -431,7 +454,7 @@ static esp_err_t handle_data(httpd_req_t *req)
         }
     }
     const int64_t t0 = esp_timer_get_time();
-    take_snapshot(want_row, want_text);
+    take_snapshot(want_row, want_text, want_qrss);
     const int n = format_json(true, json_buf, sizeof(json_buf));
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -598,6 +621,7 @@ struct WsClient {
     int fd;
     uint32_t row;             // next sequence numbers this client needs: rows,
     uint32_t text[UI_TEXT_COUNT];    // text of each channel
+    uint32_t qrss;            // QRSS columns
     int64_t last_status_us;   // status JSON goes out once a second (or with new text)
 };
 static WsClient ws_clients[WS_MAX_CLIENTS];
@@ -694,7 +718,7 @@ static void ws_push_work(void *)
     for (WsClient &c : ws_clients) {
         if (!c.used)
             continue;
-        take_snapshot(c.row, c.text);
+        take_snapshot(c.row, c.text, c.qrss);
 
         httpd_ws_frame_t f = {};
         esp_err_t err = ESP_OK;
@@ -709,7 +733,7 @@ static void ws_push_work(void *)
             err = httpd_ws_send_frame_async(server, c.fd, &f);
         }
         const int64_t now = esp_timer_get_time();
-        bool new_text = false;
+        bool new_text = snap.qseq != c.qrss;
         for (int k = 0; k < UI_TEXT_COUNT; k++)
             new_text |= snap.tseq[k] != c.text[k];
         const bool send_status = new_text || now - c.last_status_us >= WS_STATUS_US;
@@ -734,6 +758,7 @@ static void ws_push_work(void *)
         c.row = snap.rseq;
         if (send_status) {
             memcpy(c.text, snap.tseq, sizeof(c.text));
+            c.qrss = snap.qseq;
         }
     }
     ws_push_pending = false;
@@ -796,9 +821,35 @@ static esp_err_t handle_config(httpd_req_t *req)
         g_settings.fax_auto = atoi(v) != 0;
     if (form_value(body, "sstv_adjust", v, sizeof(v)))
         g_settings.sstv_adjust = atoi(v) != 0;
+    if (form_value(body, "skim_on", v, sizeof(v)))
+        g_settings.skim_enabled = atoi(v) != 0;
+    if (form_value(body, "mfsk_mode", v, sizeof(v))) {
+        const int m = atoi(v);
+        if (m >= MFSK_OFF && m <= MFSK_CONTESTIA)
+            g_settings.mfsk_mode = m;
+    }
+    if (form_value(body, "mfsk_tones", v, sizeof(v)) || form_value(body, "mfsk_bw", v, sizeof(v))) {
+        char tv[12] = "", bv[12] = "";
+        const int t = form_value(body, "mfsk_tones", tv, sizeof(tv)) ? atoi(tv) : g_settings.mfsk_tones;
+        const int b = form_value(body, "mfsk_bw", bv, sizeof(bv)) ? atoi(bv) : g_settings.mfsk_bw;
+        if (mfsk_valid(t, b)) {
+            g_settings.mfsk_tones = t;
+            g_settings.mfsk_bw = b;
+        }
+    }
+    if (form_value(body, "mfsk_hz", v, sizeof(v))) {
+        const int hz = atoi(v);
+        if (hz >= 300 && hz <= 3000)
+            g_settings.mfsk_hz = hz;
+    }
+    if (form_value(body, "qrss_hz", v, sizeof(v))) {
+        const int hz = atoi(v);
+        if (hz >= 300 && hz <= 3000)
+            g_settings.qrss_hz = hz;
+    }
     if (form_value(body, "ftx_mode", v, sizeof(v))) {
         const int m = atoi(v);
-        if (m >= FTX_OFF && m <= FTX_FT4)
+        if (m >= FTX_OFF && m < FTX_PROTOCOLS)
             g_settings.ftx_mode = m;
     }
     // The page's clock (UTC ms) when NTP has not set ours (access point
