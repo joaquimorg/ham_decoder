@@ -59,13 +59,13 @@ static const char *TAG = "LCD";
 #define TABBAR_H        36
 #define CONTENT_H       (LCD_V_RES - STATUS_H - TABBAR_H)    // 262
 #define SPEC_H          56
-#define RX_LINE_ROWS    4       // RX tab window: text rows (the newest at the bottom)
+#define RX_LINE_ROWS    5       // RX tab window: text rows (the newest at the bottom)
 #define RX_ROW_H        15      // font_ui_12 line height
-#define RX_HEAD_H       24      // mode name above the rows (with a gap before them)
-#define RX_LINE_H       (RX_HEAD_H + RX_LINE_ROWS * RX_ROW_H + 2)    // the window: 86
+#define RX_PAD          4       // above and below the rows
+#define RX_LINE_H       (RX_LINE_ROWS * RX_ROW_H + 2 * RX_PAD)    // the window: 83
 #define RX_IMG_W        (LCD_H_RES - 8)            // ... showing the image being received
-#define RX_IMG_H        (RX_LINE_H - RX_HEAD_H)
-#define WF_H            (CONTENT_H - SPEC_H - RX_LINE_H)    // 120, above the window
+#define RX_IMG_H        (RX_LINE_H - 2 * RX_PAD)
+#define WF_H            (CONTENT_H - SPEC_H - RX_LINE_H)    // 123, above the window
 #define TEXT_KEEP       500     // characters kept for the RX-tab view
 #define TEXT_TAB_LINES  25      // lines kept in the Text tab (as shown, after wrapping)
 #define TEXT_TAB_MSGS   10      // frames / messages kept in the Text tab (APRS, POCSAG)
@@ -1670,19 +1670,10 @@ static void build_ui()
     lv_obj_set_pos(box, 0, SPEC_H + WF_H);
     lv_obj_set_size(box, LCD_H_RES, RX_LINE_H);
     lv_obj_remove_flag(box, LV_OBJ_FLAG_CLICKABLE);
-    // Mode name on a chip in the channel's colour (there is no bold font).
-    rx_head = lv_label_create(box);
-    lv_obj_set_style_text_font(rx_head, &font_ui_12, 0);
-    lv_obj_set_style_text_color(rx_head, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(rx_head, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_hor(rx_head, 5, 0);
-    lv_obj_set_style_radius(rx_head, 3, 0);
-    lv_obj_set_pos(rx_head, 4, 3);
-    rx_set_head("RX", 0x808080);
     rx_rows = plain(lv_obj_create(box));
     lv_obj_set_style_bg_opa(rx_rows, LV_OPA_TRANSP, 0);
     lv_obj_remove_flag(rx_rows, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_pos(rx_rows, 4, RX_HEAD_H);
+    lv_obj_set_pos(rx_rows, 4, RX_PAD);
     lv_obj_set_size(rx_rows, LCD_H_RES - 8, RX_LINE_ROWS * RX_ROW_H);
     rx_text = lv_label_create(rx_rows);
     lv_obj_set_style_text_font(rx_text, &font_ui_12, 0);
@@ -1691,8 +1682,18 @@ static void build_ui()
     lv_obj_align(rx_text, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     lv_label_set_text(rx_text, "");
     rx_img = make_canvas(box, &rx_img_buf, RX_IMG_W, RX_IMG_H);
-    lv_obj_set_pos(rx_img, 4, RX_HEAD_H);
+    lv_obj_set_pos(rx_img, 4, RX_PAD);
     lv_obj_add_flag(rx_img, LV_OBJ_FLAG_HIDDEN);
+    // Mode name on a chip in the channel's colour (there is no bold font), at
+    // the top right over the text or the image (created last: drawn on top).
+    rx_head = lv_label_create(box);
+    lv_obj_set_style_text_font(rx_head, &font_ui_12, 0);
+    lv_obj_set_style_text_color(rx_head, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(rx_head, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_hor(rx_head, 5, 0);
+    lv_obj_set_style_radius(rx_head, 3, 0);
+    lv_obj_align(rx_head, LV_ALIGN_TOP_RIGHT, -4, RX_PAD);
+    rx_set_head("RX", 0x808080);
     // After a rebuild (language change): back on what was shown.
     {
         const int cur = rx_cur;

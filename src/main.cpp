@@ -8,6 +8,7 @@
 
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_attr.h"
 #include "esp_timer.h"
 #include "esp_system.h"
 
@@ -25,7 +26,7 @@
 static const char *TAG = "RX_ANALYZER";
 
 // Capture -> analysis hand-off: DSP_NUM_BUFFERS blocks cycle through two queues.
-static float dsp_buffers[DSP_NUM_BUFFERS][FFT_SIZE];
+EXT_RAM_BSS_ATTR static float dsp_buffers[DSP_NUM_BUFFERS][FFT_SIZE];    // the internal RAM is short
 static QueueHandle_t free_queue = nullptr;
 static QueueHandle_t full_queue = nullptr;
 
@@ -109,6 +110,14 @@ static void analysis_task(void *arg)
         analyzer_process_block(dsp_buffers[msg.index], msg.raw_peak, msg.overruns);
         load += ((esp_timer_get_time() - t0) / block_us - load) * 0.1f;
         ui_set_load(load);
+        // Blocks lost because the analysis was behind (each one is a jump in the audio).
+        static uint32_t ovr_logged = 0;
+        static int64_t ovr_last_log = 0;
+        if (msg.overruns != ovr_logged && t0 - ovr_last_log > 5000000) {
+            ESP_LOGW(TAG, "analise atrasada: %u blocos de audio perdidos desde o arranque", (unsigned)msg.overruns);
+            ovr_logged = msg.overruns;
+            ovr_last_log = t0;
+        }
 #if LOAD_LOG_S
         static int64_t load_peak_us = 0, load_last_log = 0;
         load_peak_us = std::max(load_peak_us, esp_timer_get_time() - t0);

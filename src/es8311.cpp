@@ -171,7 +171,12 @@ static bool codec_init()
     // Input: MIC1P/MIC1N analog (the radio audio replaces the MEMS microphone).
     e |= wr(REG_SYS14, 0x10 | (ES8311_MIC_PGA & 0x0F));
     e |= wr(REG_ADC15, 0x40);               // ADC ramp rate
-    e |= wr(REG_ADC16, ES8311_ADC_SCALE & 0x07);
+    // ADC_SYNC (bit 5): the decimation filter's counter follows LRCK. Without
+    // it (the "non standard clock" setting) the ADC output drifted against the
+    // frames - the ESP32-S3 makes MCLK with a fractional divider (160 MHz /
+    // 52.08) - and samples slipped now and then: broadband clicks across the
+    // waterfall and broken RTTY characters.
+    e |= wr(REG_ADC16, 0x20 | (ES8311_ADC_SCALE & 0x07));
     e |= wr(REG_ADC17, 0xBF);               // ADC volume 0 dB
 
     // Output stays muted until the monitor volume is applied.

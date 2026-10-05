@@ -138,7 +138,10 @@
 #endif
 #define FFT_SIZE            1024    // 11.7 Hz/bin, 85 ms per frame at 12 kHz
 #define FFT_FRAMES_PER_REPORT 12    // ~1 s averaged per report line
-#define DSP_NUM_BUFFERS     3
+// Blocks between capture and analysis (85 ms each, in PSRAM): the analysis
+// takes more than a block now and then (the report each second, the Olivia
+// front end), and a block it cannot take is lost - 85 ms of RTTY is 4 bits.
+#define DSP_NUM_BUFFERS     8
 
 // Spectrum analysis window
 #define SPECTRUM_MIN_HZ     100
