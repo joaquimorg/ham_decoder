@@ -889,6 +889,39 @@ static FtxMessage ftx_list[FTX_ROWS];    // newest first
 static int ftx_count = 0;
 static uint32_t ftx_seq = 0;
 
+// Table look: numeric columns (UTC, dB, DT, Hz) right-aligned, the message on
+// the left, zebra rows, the header in the accent colour, CQs in green and the
+// closing 73/RR73/RRR in grey.
+static void ftx_draw_event(lv_event_t *e)
+{
+    lv_draw_task_t *task = lv_event_get_draw_task(e);
+    const lv_draw_dsc_base_t *base = (const lv_draw_dsc_base_t *)lv_draw_task_get_draw_dsc(task);
+    if (base->part != LV_PART_ITEMS)
+        return;
+    const uint32_t row = base->id1, col = base->id2;
+    if (lv_draw_label_dsc_t *ld = lv_draw_task_get_label_dsc(task)) {
+        if (col < 4)
+            ld->align = LV_TEXT_ALIGN_RIGHT;
+        if (row == 0) {
+            ld->color = lv_color_hex(0x6ab0ff);
+        } else if (col < 4) {
+            ld->color = lv_color_hex(0xa8b4c8);
+        } else if ((int)row <= ftx_count) {
+            const char *t = ftx_list[row - 1].text;
+            if (strncmp(t, "CQ", 2) == 0)
+                ld->color = lv_color_hex(0x9fe89f);
+            else if (strstr(t, " 73") || strstr(t, "RRR"))
+                ld->color = lv_color_hex(0x8a94a8);
+            else
+                ld->color = lv_color_white();
+        }
+    }
+    if (lv_draw_fill_dsc_t *fd = lv_draw_task_get_fill_dsc(task)) {
+        fd->opa = LV_OPA_COVER;
+        fd->color = lv_color_hex(row == 0 ? 0x1c2438 : (row & 1) ? 0x0c121e : 0x151d2e);
+    }
+}
+
 static void update_ftx()
 {
     static FtxMessage fresh[UI_FTX_RING];
@@ -907,9 +940,9 @@ static void update_ftx()
             struct tm tm;
             gmtime_r(&t, &tm);
             char s[16];
-            snprintf(s, sizeof(s), "%02d%02d%02d", tm.tm_hour, tm.tm_min, tm.tm_sec);
+            snprintf(s, sizeof(s), "%02d:%02d:%02d", tm.tm_hour, tm.tm_min, tm.tm_sec);
             lv_table_set_cell_value(ftx_table, i + 1, 0, s);
-            snprintf(s, sizeof(s), "%.0f", m.snr_db);
+            snprintf(s, sizeof(s), "%+.0f", m.snr_db);
             lv_table_set_cell_value(ftx_table, i + 1, 1, s);
             snprintf(s, sizeof(s), "%.1f", m.dt);
             lv_table_set_cell_value(ftx_table, i + 1, 2, s);
@@ -1970,9 +2003,11 @@ static void build_ui()
     lv_obj_set_style_radius(ftx_table, 0, 0);
     lv_obj_set_style_text_font(ftx_table, &font_ui_12, LV_PART_ITEMS);
     lv_obj_set_style_pad_ver(ftx_table, 2, LV_PART_ITEMS);
-    lv_obj_set_style_pad_hor(ftx_table, 3, LV_PART_ITEMS);
+    lv_obj_set_style_pad_hor(ftx_table, 5, LV_PART_ITEMS);
+    lv_obj_add_flag(ftx_table, LV_OBJ_FLAG_SEND_DRAW_TASK_EVENTS);
+    lv_obj_add_event_cb(ftx_table, ftx_draw_event, LV_EVENT_DRAW_TASK_ADDED, nullptr);
     const char *heads[] = { "UTC", "dB", "DT", "Hz", tr(S_FTX_MESSAGE) };
-    static const int widths[] = { 54, 32, 38, 42, LCD_H_RES - 54 - 32 - 38 - 42 - 6 };    // 6: scrollbar
+    static const int widths[] = { 66, 40, 42, 48, LCD_H_RES - 66 - 40 - 42 - 48 - 6 };    // 6: scrollbar
     lv_table_set_column_count(ftx_table, 5);
     for (int c = 0; c < 5; c++) {
         lv_table_set_column_width(ftx_table, c, widths[c]);
