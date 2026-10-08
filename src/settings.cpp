@@ -51,6 +51,8 @@ static void set_defaults()
     g_settings.mfsk_tones = 32;
     g_settings.mfsk_bw = 1000;
     g_settings.mfsk_hz = MFSK_DEFAULT_HZ;
+    g_settings.decoder = DEC_AUTO;
+    g_settings.dec_hz = 1500;
     g_settings.web_enabled = true;
     g_settings.lcd_brightness = 80;
     g_settings.monitor_volume = MONITOR_DEFAULT_VOL;
@@ -109,6 +111,10 @@ void settings_init()
     }
     if (nvs_get_u32(h, "mfsk_hz", &u32) == ESP_OK && u32 >= 300 && u32 <= 3000)
         g_settings.mfsk_hz = u32;
+    if (nvs_get_u8(h, "dec_sel", &u8) == ESP_OK && u8 < DEC_COUNT)
+        g_settings.decoder = u8;
+    if (nvs_get_u32(h, "dec_hz", &u32) == ESP_OK && u32 >= 300 && u32 <= 3000)
+        g_settings.dec_hz = u32;
     if (nvs_get_u8(h, "web_on", &u8) == ESP_OK)
         g_settings.web_enabled = u8 != 0;
     if (nvs_get_u8(h, "lcd_bl", &u8) == ESP_OK && u8 >= 5 && u8 <= 100)
@@ -167,6 +173,8 @@ void settings_save()
     nvs_set_u8(h, "mfsk_mode", (uint8_t)g_settings.mfsk_mode);
     nvs_set_u32(h, "mfsk_fmt", ((uint32_t)g_settings.mfsk_tones << 16) | (uint32_t)g_settings.mfsk_bw);
     nvs_set_u32(h, "mfsk_hz", (uint32_t)g_settings.mfsk_hz);
+    nvs_set_u8(h, "dec_sel", (uint8_t)g_settings.decoder);
+    nvs_set_u32(h, "dec_hz", (uint32_t)g_settings.dec_hz);
     nvs_set_u8(h, "web_on", g_settings.web_enabled ? 1 : 0);
     nvs_set_u8(h, "lcd_bl", (uint8_t)g_settings.lcd_brightness);
     nvs_set_u8(h, "mon_vol", (uint8_t)g_settings.monitor_volume);
@@ -184,9 +192,28 @@ void settings_apply()
     fax_set_ioc(g_settings.fax_ioc);
     fax_set_auto(g_settings.fax_auto);
     sstv_set_auto_adjust(g_settings.sstv_adjust);
-    skimmer_set_enabled(g_settings.skim_enabled);
     qrss_set_center(g_settings.qrss_hz);
-    mfsk_configure((MfskMode)g_settings.mfsk_mode, g_settings.mfsk_tones, g_settings.mfsk_bw, g_settings.mfsk_hz);
-    ftx_core_set_protocol((FtxProtocol)g_settings.ftx_mode);
+    if (decoder_manual()) {
+        // Only the chosen decoder: Olivia/Contestia and FT8/FT4/JS8 take their
+        // mode from the choice (the format and the centre of Olivia stay as set).
+        const int d = g_settings.decoder;
+        skimmer_set_enabled(false);
+        mfsk_configure(d == DEC_OLIVIA ? MFSK_OLIVIA : d == DEC_CONTESTIA ? MFSK_CONTESTIA : MFSK_OFF,
+                       g_settings.mfsk_tones, g_settings.mfsk_bw, g_settings.dec_hz);
+        ftx_core_set_protocol(d >= DEC_FT8 && d <= DEC_JS8_SLOW ? (FtxProtocol)(d - DEC_FT8 + 1) : FTX_OFF);
+    } else {
+        skimmer_set_enabled(g_settings.skim_enabled);
+        mfsk_configure((MfskMode)g_settings.mfsk_mode, g_settings.mfsk_tones, g_settings.mfsk_bw, g_settings.mfsk_hz);
+        ftx_core_set_protocol((FtxProtocol)g_settings.ftx_mode);
+    }
     audio_monitor_set_volume(g_settings.monitor_volume);
+}
+
+const char *decoder_name(DecoderSel d)
+{
+    static const char *const NAMES[DEC_COUNT] = {
+        "AUTO", "CW", "RTTY", "PSK", "OLIVIA", "CONTESTIA", "FT8", "FT4",
+        "JS8", "JS8 FAST", "JS8 TURBO", "JS8 SLOW", "FAX", "SSTV", "APRS", "POCSAG"
+    };
+    return d >= 0 && d < DEC_COUNT ? NAMES[d] : "?";
 }

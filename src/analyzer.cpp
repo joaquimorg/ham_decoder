@@ -209,6 +209,27 @@ void print_ruler()
 // beyond the decoder's AFC reach.
 constexpr float PSK_CENTRE_HZ = 80.0f;
 
+// Manual mode: the chosen frequency snaps to the strongest bin within
+// MAN_SNAP_HZ when there is a signal there; RTTY looks for its two tones
+// within MAN_RTTY_SPAN_HZ.
+constexpr float MAN_SNAP_HZ = 40.0f;
+constexpr float MAN_RTTY_SPAN_HZ = 500.0f;
+
+float strongest_near(float hz, float span_hz, float noise_db)
+{
+    const int kc = (int)(hz / BIN_HZ + 0.5f), w = (int)(span_hz / BIN_HZ);
+    int best = -1;
+    for (int k = kc - w; k <= kc + w; k++) {
+        if (k < 1 || k >= HALF - 1)
+            continue;
+        if (best < 0 || db[k] > db[best])
+            best = k;
+    }
+    if (best < 0 || db[best] < noise_db + SIGNAL_MIN_SNR_DB)
+        return hz;
+    return best * BIN_HZ;
+}
+
 float psk_centre(float peak_hz, float noise_db)
 {
     const float floor_lin = powf(10.0f, noise_db / 10.0f);
@@ -408,6 +429,18 @@ void report()
         snprintf(label, sizeof(label), "? %.0fHz bw%.0f", peaks[0].hz, occ_hz);
     }
 
+    // Manual mode: the heuristics above only name the signal; nothing is
+    // locked from them. The chosen decoder is locked on the chosen frequency
+    // further down.
+    const bool manual = decoder_manual();
+    const DecoderSel sel = (DecoderSel)g_settings.decoder;
+    const float man_hz = (float)g_settings.dec_hz;
+    if (manual) {
+        narrow_tone = false;
+        fsk_lo = fsk_hi = 0.0f;
+        snprintf(label, sizeof(label), "%s %.0fHz", decoder_name(sel), man_hz);
+    }
+
     // RTTY that decodes well-formed characters has priority: its mark tone
     // also looks like keyed CW to the classifier, which then fed the CW
     // decoder with RTTY and printed garbage.
@@ -442,7 +475,13 @@ void report()
 
     // Keep the CW decoder on the tone; hold the lock through short pauses.
     // A manual tone (web settings) overrides the automatic choice.
-    if (image_on || psk_on) {
+    if (manual) {
+        if (sel == DEC_CW)
+            cw_set_tone(strongest_near(man_hz, MAN_SNAP_HZ, noise_db));
+        else if (cw_tone_hz() > 0.0f)
+            cw_set_tone(0.0f);
+        unlock_reports = 0;
+    } else if (image_on || psk_on) {
         cw_set_tone(0.0f);
     } else if (rtty_on) {
         cw_set_tone(0.0f);
@@ -463,7 +502,32 @@ void report()
     // RTTY follows the two FSK tones, held through short pauses.
     rtty_set_baud(g_settings.rtty_baud);
     rtty_set_polarity((RttyPolarity)g_settings.rtty_polarity);
-    if (image_on || psk_on) {
+    if (manual) {
+        // The two strongest tones around the chosen frequency, a standard
+        // shift or so apart: the pair's centre is what the user points at.
+        float lo = 0.0f, hi = 0.0f;
+        if (sel == DEC_RTTY) {
+            for (int i = 0; i < npeaks && hi <= 0.0f; i++) {
+                if (fabsf(peaks[i].hz - man_hz) > MAN_RTTY_SPAN_HZ || peaks[i].db < noise_db + SIGNAL_MIN_SNR_DB)
+                    continue;
+                for (int j = i + 1; j < npeaks; j++) {
+                    const float d = fabsf(peaks[i].hz - peaks[j].hz);
+                    if (fabsf(peaks[j].hz - man_hz) <= MAN_RTTY_SPAN_HZ && d >= 100.0f && d <= 1000.0f &&
+                        fabsf(peaks[i].db - peaks[j].db) < 10.0f) {
+                        lo = fminf(peaks[i].hz, peaks[j].hz);
+                        hi = fmaxf(peaks[i].hz, peaks[j].hz);
+                        break;
+                    }
+                }
+            }
+        }
+        if (hi > 0.0f) {
+            rtty_set_tones(lo, hi);
+            rtty_unlock_reports = 0;
+        } else if (sel != DEC_RTTY && rtty_mark_hz() > 0.0f) {
+            rtty_set_tones(0.0f, 0.0f);
+        }
+    } else if (image_on || psk_on) {
         if (rtty_mark_hz() > 0.0f)
             rtty_set_tones(0.0f, 0.0f);
     } else if (fsk_lo > 0.0f) {
@@ -487,7 +551,17 @@ void report()
     // QPSK) that nothing else claims is tried at the centre of its band.
     const bool wide_guess = !ml_psk && npeaks > 0 && snr >= SIGNAL_MIN_SNR_DB && !narrow_tone &&
                             fsk_lo <= 0.0f && !rtty_on && occ_hz >= 150.0f && occ_hz <= 1200.0f;
-    if (image_on) {
+    if (manual) {
+        if (sel != DEC_PSK) {
+            if (psk_tone_hz() > 0.0f)
+                psk_set_tone(0.0f);
+        } else if (!psk_on) {
+            const float c = psk_centre(strongest_near(man_hz, MAN_SNAP_HZ, noise_db), noise_db);
+            if (psk_tone_hz() <= 0.0f || fabsf(c - psk_tone_hz()) > 15.0f)
+                psk_set_tone(c);
+        }
+        psk_unlock_reports = 0;
+    } else if (image_on) {
         if (psk_tone_hz() > 0.0f)
             psk_set_tone(0.0f);
     } else if (psk_on) {
@@ -506,7 +580,7 @@ void report()
 
     // Multi-channel CW / PSK31 on the other narrow signals (not during an
     // image: FAX/SSTV fill the band with narrow-looking peaks).
-    if (!image_on) {
+    if (!image_on && !manual) {
         const float floor_lin = powf(10.0f, noise_db / 10.0f);
         SkimSignal sig[MAX_CANDIDATES];
         int nsig = 0;
@@ -752,16 +826,21 @@ void analyzer_process_block(const float *x, int32_t raw_peak, uint32_t overruns)
     skimmer_process(x, N);
     qrss_process(x, N);
     mfsk_process(x, N);
-    aprs_process(x, N);
+    if (decoder_runs(DEC_APRS))
+        aprs_process(x, N);
 #if POCSAG_ENABLE
-    pocsag_process(x, N);
+    if (decoder_runs(DEC_POCSAG))
+        pocsag_process(x, N);
 #endif
     tones_process(x, N);
     static float fm_hz[N], fm_mag[N];
+    // FAX and SSTV (and the FM discriminator they share) only run when chosen
+    // in manual mode.
+    const bool images = decoder_runs(DEC_FAX) || decoder_runs(DEC_SSTV);
     // Blocks dropped since the last one (analysis behind): FAX and SSTV count
     // time in samples, so they get the missing samples as a mid-grey tone
     // rather than having every later line shifted sideways.
-    if (overruns != last_overruns) {
+    if (images && overruns != last_overruns) {
         for (int i = 0; i < N; i++)
             fm_hz[i] = 1900.0f;
         for (uint32_t k = overruns - last_overruns; k > 0; k--) {
@@ -769,9 +848,13 @@ void analyzer_process_block(const float *x, int32_t raw_peak, uint32_t overruns)
             sstv_process(fm_hz, N);
         }
     }
-    fm_demod_process(x, fm_hz, N, fm_mag);
-    fax_process(fm_hz, N, fm_mag);
-    sstv_process(fm_hz, N);
+    if (images) {
+        fm_demod_process(x, fm_hz, N, fm_mag);
+        if (decoder_runs(DEC_FAX))
+            fax_process(fm_hz, N, fm_mag);
+        if (decoder_runs(DEC_SSTV))
+            sstv_process(fm_hz, N);
+    }
     ftx_process(x, N);
 
     for (int i = 0; i < N; i++) {

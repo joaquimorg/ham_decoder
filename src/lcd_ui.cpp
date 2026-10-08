@@ -94,6 +94,10 @@ LV_FONT_DECLARE(font_ui_16)
     X(S_TAB_IMAGE,      "Imagem", "Image") \
     X(S_FTX_MODES,      "Desligado\nFT8\nFT4\nJS8 Normal\nJS8 Fast\nJS8 Turbo\nJS8 Slow", \
                         "Off\nFT8\nFT4\nJS8 Normal\nJS8 Fast\nJS8 Turbo\nJS8 Slow") \
+    X(S_DEC_TITLE,      "Descodificador", "Decoder") \
+    X(S_DEC_AUTO,       "Automático", "Automatic") \
+    X(S_DEC_HINT,       "Manual: só o descodificador escolhido corre, na frequência tocada no espectro.", \
+                        "Manual: only the chosen decoder runs, on the frequency tapped on the spectrum.") \
     X(S_FTX_OFF,        "Desligado", "Off") \
     X(S_FTX_NO_TIME,    "sem hora UTC (Wi-Fi/NTP)", "no UTC time (Wi-Fi/NTP)") \
     X(S_FTX_LAST,       "último período: %d msg, %d ms", "last slot: %d msg, %d ms") \
@@ -521,19 +525,34 @@ static void draw_rows(const uint8_t (*rows)[UI_BINS], int n)
     }
     if (last_status.psk_active)
         marker(last_status.psk_hz, rgb565(90, 180, 255));
-    if (!g_settings.cw_auto_tone)
+    if (decoder_manual())
+        marker(g_settings.dec_hz, rgb565(255, 160, 0));
+    else if (!g_settings.cw_auto_tone)
         marker(g_settings.cw_tone_hz, rgb565(255, 255, 255));
 
     lv_obj_invalidate(spec_canvas);
     lv_obj_invalidate(wf_canvas);
 }
 
-// Tap on the spectrum/waterfall: manual CW tone there; long press: automatic.
+// Tap on the spectrum/waterfall: manual frequency there (the manual decoder
+// or, in automatic mode, the CW tone); long press: automatic.
 static void spectrum_event(lv_event_t *e)
 {
     lv_obj_t *obj = (lv_obj_t *)lv_event_get_target(e);
     if (lv_event_get_code(e) == LV_EVENT_LONG_PRESSED) {
         g_settings.cw_auto_tone = true;
+        g_settings.decoder = DEC_AUTO;
+        settings_apply();
+    } else if (decoder_manual()) {
+        lv_point_t p;
+        lv_indev_get_point(lv_indev_active(), &p);
+        lv_area_t a;
+        lv_obj_get_coords(obj, &a);
+        const float hz = col_hz(p.x - a.x1);
+        if (hz < SPECTRUM_MIN_HZ || hz > SPECTRUM_MAX_HZ)
+            return;
+        g_settings.dec_hz = (int)(hz + 0.5f);
+        settings_apply();
     } else {
         lv_point_t p;
         lv_indev_get_point(lv_indev_active(), &p);
@@ -872,7 +891,7 @@ static void update_ftx()
     }
     char s[128];
     const int last = ftx_last_count();
-    if (g_settings.ftx_mode == FTX_OFF)
+    if (ftx_core_protocol() == FTX_OFF)
         snprintf(s, sizeof(s), "%s", tr(S_FTX_OFF));
     else if (!ftx_time_ok())
         snprintf(s, sizeof(s), LV_SYMBOL_WARNING " %s", tr(S_FTX_NO_TIME));
@@ -1526,9 +1545,12 @@ static void update_cfg_info()
 // ---------------------------------------------------------------------------
 // Status bar and the periodic update
 
+static void dec_update_chip();
+
 static void update_status()
 {
     last_status = ui_get_status();
+    dec_update_chip();    // the choice may have come from the web page
     char label[64];
     translate_label(last_status.label, label, sizeof(label));
     lv_label_set_text(lbl_mode, label[0] ? label : "-");
@@ -1604,8 +1626,89 @@ static lv_obj_t *plain(lv_obj_t *obj)
 static lv_display_t *display;
 
 // Creates every widget (again after a language change).
+// ---------------------------------------------------------------------------
+// Decoder choice: the chip in the status bar opens a panel with Automatic and
+// one button per decoder.
+
+static lv_obj_t *dec_panel, *dec_chip, *dec_chip_lbl;
+
+static void dec_update_chip()
+{
+    if (!dec_chip)
+        return;
+    const bool man = decoder_manual();
+    lv_label_set_text(dec_chip_lbl, man ? decoder_name((DecoderSel)g_settings.decoder) : tr(S_DEC_AUTO));
+    lv_obj_set_style_bg_color(dec_chip, lv_color_hex(man ? 0xc06000 : 0x2a4a2a), 0);
+}
+
+static void dec_close()
+{
+    if (dec_panel) {
+        lv_obj_delete(dec_panel);
+        dec_panel = nullptr;
+    }
+}
+
+static void dec_pick_event(lv_event_t *e)
+{
+    g_settings.decoder = (int)(intptr_t)lv_event_get_user_data(e);
+    settings_apply();
+    settings_save();
+    dec_update_chip();
+    dec_close();
+}
+
+static void dec_close_event(lv_event_t *) { dec_close(); }
+
+static void dec_open_event(lv_event_t *)
+{
+    if (dec_panel)
+        return;
+    dec_panel = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(dec_panel, LCD_H_RES, LCD_V_RES);
+    lv_obj_set_pos(dec_panel, 0, 0);
+    lv_obj_set_style_radius(dec_panel, 0, 0);
+    lv_obj_set_style_border_width(dec_panel, 0, 0);
+    lv_obj_set_style_pad_all(dec_panel, 0, 0);
+    lv_obj_set_scrollable(dec_panel, false);
+
+    lv_obj_t *t = lv_label_create(dec_panel);
+    lv_obj_set_style_text_font(t, &font_ui_16, 0);
+    lv_obj_set_pos(t, 8, 12);
+    lv_label_set_text(t, tr(S_DEC_TITLE));
+    lv_obj_t *cb = lv_button_create(dec_panel);
+    lv_obj_set_size(cb, 100, 30);
+    lv_obj_set_pos(cb, LCD_H_RES - 108, 6);
+    lv_obj_t *cl = lv_label_create(cb);
+    lv_label_set_text(cl, tr(S_CLOSE));
+    lv_obj_center(cl);
+    lv_obj_add_event_cb(cb, dec_close_event, LV_EVENT_CLICKED, nullptr);
+
+    constexpr int COLS = 4, BW = 112, BH = 54, GAP = 8, X0 = 8, Y0 = 46;
+    for (int d = 0; d < DEC_COUNT; d++) {
+        lv_obj_t *b = lv_button_create(dec_panel);
+        lv_obj_set_size(b, BW, BH);
+        lv_obj_set_pos(b, X0 + (d % COLS) * (BW + GAP), Y0 + (d / COLS) * (BH + GAP));
+        if (d == g_settings.decoder)
+            lv_obj_set_style_bg_color(b, lv_color_hex(d ? 0xc06000 : 0x2a8a2a), 0);
+        lv_obj_t *l = lv_label_create(b);
+        lv_obj_set_width(l, BW - 8);
+        lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_text(l, d ? decoder_name((DecoderSel)d) : tr(S_DEC_AUTO));
+        lv_obj_center(l);
+        lv_obj_add_event_cb(b, dec_pick_event, LV_EVENT_CLICKED, (void *)(intptr_t)d);
+    }
+    lv_obj_t *h = lv_label_create(dec_panel);
+    lv_obj_set_style_text_font(h, &font_ui_12, 0);
+    lv_obj_set_style_text_color(h, lv_color_hex(0x8090b0), 0);
+    lv_obj_set_width(h, LCD_H_RES - 16);
+    lv_obj_set_pos(h, 8, Y0 + 4 * (BH + GAP) + 2);
+    lv_label_set_text(h, tr(S_DEC_HINT));
+}
+
 static void build_ui()
 {
+    dec_panel = nullptr;
     lv_obj_t *scr = lv_display_get_screen_active(display);
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     plain(scr);
@@ -1615,9 +1718,24 @@ static void build_ui()
     lv_obj_set_size(bar, LCD_H_RES, STATUS_H);
     lv_obj_set_style_bg_color(bar, lv_color_hex(0x1c2438), 0);
     lbl_mode = lv_label_create(bar);
-    lv_obj_set_width(lbl_mode, 250);
+    lv_obj_set_width(lbl_mode, 190);
     lv_label_set_long_mode(lbl_mode, LV_LABEL_LONG_MODE_CLIP);
-    lv_obj_align(lbl_mode, LV_ALIGN_LEFT_MID, 4, 0);
+    lv_obj_align(lbl_mode, LV_ALIGN_LEFT_MID, 92, 0);
+    // Decoder chip: Automatic or the manual decoder; a tap opens the choice.
+    dec_chip = plain(lv_obj_create(bar));
+    lv_obj_set_size(dec_chip, 86, STATUS_H - 4);
+    lv_obj_align(dec_chip, LV_ALIGN_LEFT_MID, 2, 0);
+    lv_obj_set_style_radius(dec_chip, 4, 0);
+    lv_obj_set_style_bg_opa(dec_chip, LV_OPA_COVER, 0);
+    lv_obj_add_flag(dec_chip, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(dec_chip, dec_open_event, LV_EVENT_CLICKED, nullptr);
+    dec_chip_lbl = lv_label_create(dec_chip);
+    lv_obj_set_width(dec_chip_lbl, 82);
+    lv_obj_set_style_text_font(dec_chip_lbl, &font_ui_12, 0);
+    lv_obj_set_style_text_align(dec_chip_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(dec_chip_lbl, LV_LABEL_LONG_MODE_CLIP);
+    lv_obj_center(dec_chip_lbl);
+    dec_update_chip();
     lbl_info = lv_label_create(bar);
     lv_obj_align(lbl_info, LV_ALIGN_RIGHT_MID, -4, 0);
     lv_label_set_text(lbl_mode, "RX Analyzer");

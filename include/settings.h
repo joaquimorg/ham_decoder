@@ -5,6 +5,16 @@
 // Runtime settings, persisted in NVS and editable from the web page.
 enum Language { LANG_PT = 0, LANG_EN = 1 };    // LCD interface
 
+// Which decoder runs. DEC_AUTO: the analyzer classifies the signal and locks
+// the decoders on its own. Anything else is manual: only that decoder runs,
+// on the frequency chosen by the user (g_settings.dec_hz), so overlapping
+// signals are not mixed up by the automatic detection.
+enum DecoderSel {
+    DEC_AUTO = 0, DEC_CW, DEC_RTTY, DEC_PSK, DEC_OLIVIA, DEC_CONTESTIA,
+    DEC_FT8, DEC_FT4, DEC_JS8_NORMAL, DEC_JS8_FAST, DEC_JS8_TURBO, DEC_JS8_SLOW,    // as FtxProtocol 1..6
+    DEC_FAX, DEC_SSTV, DEC_APRS, DEC_POCSAG, DEC_COUNT
+};
+
 struct Settings {
     bool cw_auto_tone;          // follow the analyzer's narrow tone
     float cw_tone_hz;           // manual CW tone when cw_auto_tone is false
@@ -22,6 +32,8 @@ struct Settings {
     int mfsk_tones;             // 4, 8, 16, 32, 64
     int mfsk_bw;                // 125, 250, 500, 1000, 2000 Hz
     int mfsk_hz;                // centre (audio Hz)
+    int decoder;                // DecoderSel
+    int dec_hz;                 // audio frequency of the manual decoder
     bool web_enabled;           // Wi-Fi + web page (WEB_UI builds only)
     int lcd_brightness;         // backlight, 5..100 %
     int monitor_volume;         // speaker monitor, 0..100 % (AUDIO_MONITOR builds)
@@ -38,6 +50,10 @@ void settings_init();
 
 void settings_save();
 
+inline bool decoder_manual() { return g_settings.decoder != DEC_AUTO; }
+// True if decoder `d` may run (always in automatic mode).
+inline bool decoder_runs(DecoderSel d) { return g_settings.decoder == DEC_AUTO || g_settings.decoder == d; }
+
 // Passes the decoder settings (CW, FAX, SSTV, FT8/FT4) on to the decoders.
 // The analyzer reads the rest of g_settings directly.
 void settings_apply();
@@ -45,3 +61,6 @@ void settings_apply();
 // Adds one to the persistent count of unexpected resets (crash, watchdog,
 // brownout) when `unexpected`, and returns the count.
 unsigned settings_count_reset(bool unexpected);
+
+// Short name of a decoder choice ("AUTO", "CW", "FT8", ...).
+const char *decoder_name(DecoderSel d);

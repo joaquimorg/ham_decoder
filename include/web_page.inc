@@ -149,6 +149,21 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 
   <section class="card">
     <h2>Waterfall</h2>
+    <div class="row" style="margin-bottom: 8px">
+      <label>Descodificador
+        <select id="decoder">
+          <option value="0">Automático</option>
+          <option value="1">CW</option><option value="2">RTTY</option><option value="3">PSK</option>
+          <option value="4">Olivia</option><option value="5">Contestia</option>
+          <option value="6">FT8</option><option value="7">FT4</option>
+          <option value="8">JS8 Normal</option><option value="9">JS8 Fast</option>
+          <option value="10">JS8 Turbo</option><option value="11">JS8 Slow</option>
+          <option value="12">FAX</option><option value="13">SSTV</option>
+          <option value="14">APRS</option><option value="15">POCSAG</option>
+        </select>
+      </label>
+      <span id="decInfo" class="hint"></span>
+    </div>
     <div class="scope" id="scope">
       <canvas id="wf"></canvas>
       <div class="axis" id="axis"></div>
@@ -158,7 +173,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       <div class="marker psk" id="mPsk"></div>
       <div class="hover" id="hover" hidden></div>
     </div>
-    <div class="hint">Verde: tom CW (âmbar em manual). Azul: marca (tracejado) e espaço (pontilhado) do RTTY. Azul claro: centro do PSK. Clica no waterfall para fixar o tom CW nessa frequência.</div>
+    <div class="hint">Verde: tom CW (âmbar em manual). Azul: marca (tracejado) e espaço (pontilhado) do RTTY. Azul claro: centro do PSK. Clica no waterfall para fixar o tom CW nessa frequência. Em modo manual (descodificador escolhido) só esse descodificador corre, na frequência em que clicares (laranja); útil quando há sinais sobrepostos.</div>
   </section>
 
   <nav class="tabs" id="tabs">
@@ -572,9 +587,10 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     el.style.left = (f / maxHz() * 100) + '%';
   }
 
+  let decSel = 0, decHz = 0;
   function placeMarker() {
-    place($('marker'), cfg.auto ? tone : cfg.manual);
-    $('marker').classList.toggle('manual', !cfg.auto);
+    place($('marker'), decSel ? decHz : cfg.auto ? tone : cfg.manual);
+    $('marker').classList.toggle('manual', decSel > 0 || !cfg.auto);
     place($('mMark'), rtty.mark);
     place($('mSpace'), rtty.space);
     place($('mPsk'), pskHz);
@@ -664,6 +680,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     $('wpm').textContent = d.tone ? d.wpm.toFixed(0) + ' wpm' : '-';
 
     cfg.auto = d.cw_auto; cfg.manual = d.cw_manual; cfg.contrast = d.contrast;
+    decSel = d.decoder; decHz = d.dec_hz;
+    if (document.activeElement !== $('decoder')) $('decoder').value = String(d.decoder);
+    $('decInfo').textContent = d.decoder ? (d.decoder >= 6 && d.decoder <= 11 ? 'manual (sem frequência: todo o canal)' : `manual em ${d.dec_hz} Hz`) : '';
     showCfg(); placeMarker();
 
     $('src').textContent = d.source;
@@ -761,8 +780,10 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   }
   wf.addEventListener('mousemove', ev => { const h = $('hover'); h.hidden = false; h.textContent = freqAt(ev).toFixed(0) + ' Hz'; });
   wf.addEventListener('mouseleave', () => { $('hover').hidden = true; });
+  $('decoder').onchange = () => { decSel = +$('decoder').value; placeMarker(); postConfig({ decoder: decSel, dec_hz: decHz || 1500 }); };
   wf.addEventListener('click', ev => {
     const f = Math.round(freqAt(ev));
+    if (decSel) { decHz = f; placeMarker(); postConfig({ dec_hz: f }); return; }
     cfg.auto = false; cfg.manual = f; $('toneHz').value = f; showCfg(); placeMarker();
     postConfig({ cw_auto: 0, cw_tone: f });
   });

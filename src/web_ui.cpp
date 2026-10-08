@@ -384,7 +384,7 @@ static int format_json(bool with_rows, char *json, size_t cap)
     n += snprintf(json + n, cap - n, ",\"ml_p\":%.2f", st.ml_prob);
     n += snprintf(json + n, cap - n,
                   ",\"snr\":%.1f,\"rms\":%.1f,\"pk\":%.1f,\"clip\":%s,\"tone\":%.1f,\"wpm\":%.1f,"
-                  "\"cw_auto\":%s,\"cw_manual\":%.1f,\"contrast\":%.2f,"
+                  "\"cw_auto\":%s,\"cw_manual\":%.1f,\"contrast\":%.2f,\"decoder\":%d,\"dec_hz\":%d,"
                   "\"rtty_mark\":%.1f,\"rtty_space\":%.1f,\"rtty_on\":%s,"
                   "\"rtty_baud\":%.2f,\"rtty_pol\":%d,"
                   "\"bin_hz\":%.4f,\"uptime\":%" PRIu32 ",\"load\":%.1f,\"heap\":%u,"
@@ -392,7 +392,7 @@ static int format_json(bool with_rows, char *json, size_t cap)
                   st.snr_db, st.rms_dbfs, st.peak_dbfs, st.clip ? "true" : "false",
                   st.tone_hz, st.wpm,
                   g_settings.cw_auto_tone ? "true" : "false", g_settings.cw_tone_hz,
-                  g_settings.cw_min_contrast,
+                  g_settings.cw_min_contrast, g_settings.decoder, g_settings.dec_hz,
                   st.rtty_mark_hz, st.rtty_space_hz, st.rtty_active ? "true" : "false",
                   g_settings.rtty_baud, g_settings.rtty_polarity,
                   (double)DSP_SAMPLE_RATE / FFT_SIZE, (uint32_t)(esp_timer_get_time() / 1000000),
@@ -846,6 +846,16 @@ static esp_err_t handle_config(httpd_req_t *req)
         const int hz = atoi(v);
         if (hz >= 300 && hz <= 3000)
             g_settings.qrss_hz = hz;
+    }
+    if (form_value(body, "decoder", v, sizeof(v))) {
+        const int d = atoi(v);
+        if (d >= DEC_AUTO && d < DEC_COUNT)
+            g_settings.decoder = d;
+    }
+    if (form_value(body, "dec_hz", v, sizeof(v))) {
+        const int hz = atoi(v);
+        if (hz >= 300 && hz <= 3000)
+            g_settings.dec_hz = hz;
     }
     if (form_value(body, "ftx_mode", v, sizeof(v))) {
         const int m = atoi(v);
