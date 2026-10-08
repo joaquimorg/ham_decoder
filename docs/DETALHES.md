@@ -180,13 +180,13 @@ Com um tom, o tom aparece no waterfall.
 - [x] recolha de amostras (`ML_LOG_FEATURES` em `config.h` + `tools/ml/log_to_npz.py`)
 - [x] dataset (sintético: `tools/ml/synth.py`, com harmónicos, reverberação, fading e ruído de SSB)
 - [x] espectrogramas / features (espetro à volta do pico, bandas largas, espetro de modulação do envelope)
-- [x] modelo de classificação (MLP 110 → 32 → 16 → 6)
+- [x] modelo de classificação (MLP 110 → 32 → 16 → 10)
 - [x] quantização (pesos int8, uma escala por camada)
 - [x] inferência no ESP32-S3 (`src/classifier.cpp`)
 - [x] primeiro teste com o rádio (CW: estável em CW, onde a heurística alterna CW/TOM)
 - [x] treinar com exemplos reais do rádio: CW, RTTY (FSK 50 bd, shift 446 Hz), voz e PSK31; 175/180 segundos reais certos num conjunto de teste à parte
 
-Classes: RUIDO, TOM, CW, RTTY (inclui FSK), PSK31, VOZ.
+Classes: RUIDO, TOM, CW, RTTY (inclui FSK), PSK31, VOZ, FT8 (inclui JS8 Normal, mesma forma de onda), FT4, JS8 (Fast/Turbo/Slow), OLIVIA (inclui Contestia). O QRSS não tem classe (numa janela de 1 s é um tom).
 
 Treino (precisa de `numpy`):
 

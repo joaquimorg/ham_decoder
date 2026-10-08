@@ -131,6 +131,66 @@ def sig_voice(rng, n):
     return out
 
 
+def mfsk_symbols(rng, n, f0, spacing, ntones, sym_s, smooth):
+    """Random M-FSK: tones f0 + k*spacing, one per symbol.
+
+    smooth=True gives phase-continuous GFSK (FT8/FT4/JS8), False gives
+    independent windowed symbols overlapping by half (Olivia/Contestia)."""
+    spb = sym_s * FS
+    nsym = int(n / spb) + 4
+    tones = rng.integers(0, ntones, nsym)
+    off = rng.uniform(0, spb)
+    t = np.arange(n) + off
+    idx = (t / spb).astype(int)
+    if smooth:
+        f = f0 + spacing * tones[idx].astype(float)
+        # Gaussian-ish smoothing of the frequency steps (BT ~ 2).
+        k = np.hanning(int(spb) | 1)
+        k /= k.sum()
+        f = np.convolve(f, k, mode="same")
+        return np.sin(2 * np.pi * np.cumsum(f) / FS + rng.uniform(0, 6.3))
+    out = np.zeros(n)
+    L = int(2 * spb)
+    w = np.hanning(L)
+    tt = np.arange(L) / FS
+    for j in range(nsym):
+        a = int(j * spb - off - spb / 2)
+        fr = f0 + spacing * tones[j]
+        seg = w * np.sin(2 * np.pi * fr * tt + rng.uniform(0, 6.3))
+        lo, hi = max(a, 0), min(a + L, n)
+        if hi > lo:
+            out[lo:hi] += seg[lo - a:hi - a]
+    return out
+
+
+def sig_ft8(rng, n):
+    # FT8 and JS8 Normal: 8-FSK, 6.25 Hz tones, 160 ms symbols.
+    f0 = rng.uniform(200, 3000 - 50)
+    return mfsk_symbols(rng, n, f0, 6.25, 8, 0.16, True)
+
+
+def sig_ft4(rng, n):
+    f0 = rng.uniform(200, 3000 - 90)
+    return mfsk_symbols(rng, n, f0, 20.833, 4, 0.048, True)
+
+
+def sig_js8(rng, n):
+    # JS8 Fast (100 ms), Turbo (60 ms) and Slow (320 ms).
+    sym = rng.choice([0.1, 0.06, 0.32])
+    sp = 1 / sym
+    f0 = rng.uniform(200, 3000 - 8 * sp)
+    return mfsk_symbols(rng, n, f0, sp, 8, sym, True)
+
+
+def sig_olivia(rng, n):
+    # Olivia / Contestia: tones x bandwidth, spacing bw/tones, symbol tones/bw s.
+    tones, bw = [(4, 125), (8, 250), (16, 500), (32, 1000), (8, 500), (16, 1000), (32, 500),
+                 (64, 2000), (4, 250), (8, 1000)][rng.integers(0, 10)]
+    spacing = bw / tones
+    f0 = rng.uniform(150, max(3200 - bw, 200))
+    return mfsk_symbols(rng, n, f0 + spacing / 2, spacing, tones, tones / bw, False)
+
+
 def distort(rng, s):
     """Speaker/audio chain: soft clipping (harmonics) and room reverberation."""
     if rng.random() < 0.4:
@@ -152,6 +212,10 @@ GENERATORS = {
     "RTTY": sig_rtty,
     "PSK31": sig_psk,
     "VOZ": sig_voice,
+    "FT8": sig_ft8,
+    "FT4": sig_ft4,
+    "JS8": sig_js8,
+    "OLIVIA": sig_olivia,
 }
 
 

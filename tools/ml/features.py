@@ -24,7 +24,8 @@ WIDE_BANDS = 16                 # 200 Hz bands from 200 Hz
 WIDE_HZ0, WIDE_HZ = 200.0, 200.0
 N_FEATURES = LOCAL_BANDS + WIDE_BANDS + MOD_BINS + 6
 
-CLASSES = ["RUIDO", "TOM", "CW", "RTTY", "PSK31", "VOZ"]
+CLASSES = ["RUIDO", "TOM", "CW", "RTTY", "PSK31", "VOZ",
+           "FT8", "FT4", "JS8", "OLIVIA"]
 
 _hann = (0.5 - 0.5 * np.cos(2 * np.pi * np.arange(N) / N)).astype(np.float32)
 POWER_NORM = 16.0 / (N * N)
