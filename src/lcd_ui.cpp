@@ -33,6 +33,8 @@
 #include "board_i2c.h"
 #include "fax_decoder.h"
 #include "ftx_decoder.h"
+#include "maidenhead.h"
+#include "world_map.h"
 #include "qrss.h"
 #include "mfsk_decoder.h"
 #include "settings.h"
@@ -386,6 +388,7 @@ constexpr int TEXT_CH = sizeof(TEXT_DEFS) / sizeof(TEXT_DEFS[0]);
 static lv_obj_t *ta_text[TEXT_CH];
 // RX window: a header chip, the text rows and a canvas for images.
 constexpr int RX_SHOW_IMAGE = -2;
+constexpr int RX_SHOW_FTX = -3;        // the last FT8/FT4/JS8 stations
 static lv_obj_t *rx_head, *rx_rows, *rx_text, *rx_img;
 static uint16_t *rx_img_buf;
 static int rx_cur = -1;                 // channel shown, RX_SHOW_IMAGE, -1 = nothing yet
@@ -407,7 +410,9 @@ static uint32_t qrss_seq = 0;
 static int qrss_axis_hz = 0;
 static int text_sel = 0;                // sub-tab shown
 static bool text_unread[TEXT_CH];       // new text in a sub-tab not shown
-static lv_obj_t *ftx_table, *lbl_ftx_state;
+static lv_obj_t *ftx_table, *lbl_ftx_state, *ftx_map, *ftx_map_btn_lbl;
+static uint16_t *ftx_map_buf;
+static bool ftx_map_view = false;       // the station map instead of the table
 static lv_obj_t *lbl_img_info;
 static lv_obj_t *lbl_wf_offset, *lbl_wf_span;
 static lv_obj_t *lbl_cfg_info, *lbl_contrast, *lbl_bright, *lbl_volume, *lbl_web_note;
@@ -922,6 +927,96 @@ static void ftx_draw_event(lv_event_t *e)
     }
 }
 
+// RX window on the last stations received (FT8/FT4/JS8): the newest messages,
+// one per row, newest at the bottom. Takes over when a period brings messages.
+static void rx_show_ftx()
+{
+    if (!rx_text || ftx_count == 0)
+        return;
+    const int p = ftx_core_protocol();
+    rx_cur = RX_SHOW_FTX;
+    rx_set_head(p >= 1 && p <= 6 ? decoder_name((DecoderSel)(DEC_FT8 + p - 1)) : "FT", 0x9fd0ff);
+    lv_obj_set_style_text_color(rx_text, lv_color_hex(0xd8e8ff), 0);
+    char buf[RX_LINE_ROWS * 72];
+    int o = 0;
+    const int rows = ftx_count < RX_LINE_ROWS ? ftx_count : RX_LINE_ROWS;
+    for (int i = rows - 1; i >= 0; i--) {    // ftx_list is newest first
+        const FtxMessage &m = ftx_list[i];
+        const time_t t = (time_t)m.slot_start;
+        struct tm tm;
+        gmtime_r(&t, &tm);
+        o += snprintf(buf + o, sizeof(buf) - o, "%02d:%02d:%02d %+3.0f %4.0f  %s%s", tm.tm_hour, tm.tm_min,
+                      tm.tm_sec, m.snr_db, m.freq_hz, m.text, i ? "\n" : "");
+    }
+    lv_label_set_text(rx_text, buf);
+    lv_obj_add_flag(rx_img, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(rx_rows, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Station map: land, a 30 degree grid and a dot at the locator of each message
+// (oldest dim, newest bright), plus the number of stations.
+#define FTX_MAP_H   (CONTENT_H - FTX_BAR_H)
+static int ftx_map_stations = 0;
+
+static void ftx_map_draw()
+{
+    if (!ftx_map_buf)
+        return;
+    const uint16_t sea = rgb565(8, 14, 30), land = rgb565(36, 56, 84), grid = rgb565(22, 32, 52);
+    for (int y = 0; y < FTX_MAP_H; y++) {
+        const int my = y * WORLD_MAP_H / FTX_MAP_H;
+        for (int x = 0; x < LCD_H_RES; x++) {
+            const int mx = x * WORLD_MAP_W / LCD_H_RES;
+            const bool is_land = WORLD_MAP[my * WORLD_MAP_ROW_BYTES + (mx >> 3)] & (0x80 >> (mx & 7));
+            ftx_map_buf[y * LCD_H_RES + x] = is_land ? land : sea;
+        }
+    }
+    for (int lon = -150; lon < 180; lon += 30)
+        for (int y = 0; y < FTX_MAP_H; y += 2)
+            ftx_map_buf[y * LCD_H_RES + (lon + 180) * LCD_H_RES / 360] = grid;
+    for (int lat = -60; lat < 90; lat += 30)
+        for (int x = 0; x < LCD_H_RES; x += 2)
+            ftx_map_buf[((90 - lat) * FTX_MAP_H / 180) * LCD_H_RES + x] = grid;
+    int stations = 0;
+    for (int i = ftx_count - 1; i >= 0; i--) {    // oldest first: the newest end up on top
+        float la, lo;
+        if (!maidenhead_from_text(ftx_list[i].text, &la, &lo))
+            continue;
+        stations++;
+        const int cx = (int)((lo + 180.0f) * LCD_H_RES / 360.0f), cy = (int)((90.0f - la) * FTX_MAP_H / 180.0f);
+        const int age = i < 5 ? 0 : i < 20 ? 1 : 2;
+        const uint16_t col = age == 0 ? rgb565(255, 230, 60) : age == 1 ? rgb565(255, 140, 40) : rgb565(200, 80, 60);
+        const int r = age == 0 ? 3 : 2;
+        for (int dy = -r; dy <= r; dy++)
+            for (int dx = -r; dx <= r; dx++) {
+                const int x = cx + dx, y = cy + dy;
+                if (dx * dx + dy * dy <= r * r + 1 && x >= 0 && x < LCD_H_RES && y >= 0 && y < FTX_MAP_H)
+                    ftx_map_buf[y * LCD_H_RES + x] = col;
+            }
+    }
+    ftx_map_stations = stations;
+    lv_obj_invalidate(ftx_map);
+}
+
+static void ftx_show_view()
+{
+    if (ftx_map_view) {
+        lv_obj_add_flag(ftx_table, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(ftx_map, LV_OBJ_FLAG_HIDDEN);
+        ftx_map_draw();
+    } else {
+        lv_obj_remove_flag(ftx_table, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ftx_map, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_label_set_text(ftx_map_btn_lbl, ftx_map_view ? LV_SYMBOL_LIST : LV_SYMBOL_GPS);
+}
+
+static void ftx_map_btn_event(lv_event_t *)
+{
+    ftx_map_view = !ftx_map_view;
+    ftx_show_view();
+}
+
 static void update_ftx()
 {
     static FtxMessage fresh[UI_FTX_RING];
@@ -933,6 +1028,9 @@ static void update_ftx()
         for (int i = 0; i < add; i++)
             ftx_list[i] = fresh[n - 1 - i];
         ftx_count = keep + add;
+        rx_show_ftx();
+        if (ftx_map_view)
+            ftx_map_draw();
         lv_table_set_row_count(ftx_table, ftx_count + 1);
         for (int i = 0; i < ftx_count; i++) {
             const FtxMessage &m = ftx_list[i];
@@ -961,6 +1059,10 @@ static void update_ftx()
         snprintf(s, sizeof(s), tr(S_FTX_LAST), last, ftx_last_ms());
     else
         snprintf(s, sizeof(s), "%s", tr(S_FTX_WAIT));
+    if (ftx_map_view) {
+        const size_t len = strlen(s);
+        snprintf(s + len, sizeof(s) - len, "  |  %d", ftx_map_stations);
+    }
     lv_label_set_text(lbl_ftx_state, s);
 }
 
@@ -1991,9 +2093,16 @@ static void build_ui()
     lbl_ftx_state = lv_label_create(tab_ftx);
     lv_obj_set_style_text_font(lbl_ftx_state, &font_ui_12, 0);
     lv_label_set_long_mode(lbl_ftx_state, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_width(lbl_ftx_state, LCD_H_RES - FTX_MODE_W - 12);
+    lv_obj_set_width(lbl_ftx_state, LCD_H_RES - FTX_MODE_W - 12 - 50);
     lv_obj_align(lbl_ftx_state, LV_ALIGN_TOP_LEFT, FTX_MODE_W + 8, (FTX_BAR_H - 15) / 2);
     lv_label_set_text(lbl_ftx_state, "");
+    // Table / station map toggle.
+    lv_obj_t *mb = lv_button_create(tab_ftx);
+    lv_obj_set_size(mb, 44, FTX_BAR_H - 4);
+    lv_obj_set_pos(mb, LCD_H_RES - 48, 2);
+    ftx_map_btn_lbl = lv_label_create(mb);
+    lv_obj_center(ftx_map_btn_lbl);
+    lv_obj_add_event_cb(mb, ftx_map_btn_event, LV_EVENT_CLICKED, nullptr);
 
     ftx_table = lv_table_create(tab_ftx);
     lv_obj_set_pos(ftx_table, 0, FTX_BAR_H);
@@ -2013,6 +2122,10 @@ static void build_ui()
         lv_table_set_column_width(ftx_table, c, widths[c]);
         lv_table_set_cell_value(ftx_table, 0, c, heads[c]);
     }
+
+    ftx_map = make_canvas(tab_ftx, &ftx_map_buf, LCD_H_RES, FTX_MAP_H);
+    lv_obj_set_pos(ftx_map, 0, FTX_BAR_H);
+    ftx_show_view();
 
     // Image: the picture (tap: whole image / fit width; 1:1 button: real size, drag
     // to pan), state and buttons.

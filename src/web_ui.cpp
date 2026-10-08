@@ -39,6 +39,7 @@
 
 static const char *TAG = "WEB";
 
+#include "world_map.h"
 #include "web_page.inc"    // const char WEB_PAGE[]
 
 #define ROWS 64                 // spectrum rows a client can get at once
@@ -424,7 +425,7 @@ static int format_json(bool with_rows, char *json, size_t cap)
                   g_settings.mfsk_bw, g_settings.mfsk_hz);
     n += snprintf(json + n, cap - n,
                   ",\"ftx_mode\":%d,\"ftx_time\":%s,\"ftx_n\":%d,\"ftx_ms\":%d,\"ftx_lost\":%d,\"utc\":%lld",
-                  g_settings.ftx_mode, ftx_time_ok() ? "true" : "false", ftx_last_count(), ftx_last_ms(),
+                  (int)ftx_core_protocol(), ftx_time_ok() ? "true" : "false", ftx_last_count(), ftx_last_ms(),
                   ftx_core_skipped(), (long long)time(nullptr));
     n += snprintf(json + n, cap - n, ",\"boot_bad\":%s,\"resets\":%u}",
                   ui_boot_unexpected() ? "true" : "false", ui_boot_resets());
@@ -548,6 +549,14 @@ static esp_err_t handle_ftx(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, json, o);
+}
+
+// GET /api/worldmap -> the land mask (include/world_map.h) for the station map
+static esp_err_t handle_worldmap(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Cache-Control", "max-age=86400");
+    return httpd_resp_send(req, (const char *)WORLD_MAP, sizeof(WORLD_MAP));
 }
 
 // GET /api/gallery -> {"seq":<n>,"imgs":[{"n":..,"title":..,"w":..,"h":..,"utc":..}, ...]}
@@ -957,6 +966,7 @@ static void http_start()
     register_uri("/api/wifi",   HTTP_POST, handle_wifi);
     register_uri("/api/img",    HTTP_GET,  handle_img);
     register_uri("/api/ftx",    HTTP_GET,  handle_ftx);
+    register_uri("/api/worldmap", HTTP_GET, handle_worldmap);
     register_uri("/api/gallery", HTTP_GET, handle_gallery);
     register_uri("/api/gallery_img", HTTP_GET, handle_gallery_img);
     register_uri("/ws",         HTTP_GET,  handle_ws, true);

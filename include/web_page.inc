@@ -393,6 +393,10 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       </div>
       <div class="note" id="ftxInfo" style="margin-bottom: 8px">-</div>
       <div class="note" style="margin-bottom: 8px">JS8 (JS8Call): uma linha por quadro, como o JS8Call os mostra (heartbeats, CQ, comandos dirigidos, texto). Uma mensagem longa vem em vários quadros seguidos. As velocidades Normal (15 s), Fast (10 s), Turbo (6 s) e Slow (30 s) não se descodificam ao mesmo tempo: escolhe a que está em uso. Como o FT8, precisa da hora UTC certa.</div>
+      <div class="mapbox" style="position: relative; margin-bottom: 10px">
+        <canvas id="ftxMap" width="960" height="468" style="width: 100%; height: auto; display: block; border-radius: 6px; background: #080e1e"></canvas>
+        <div class="note" id="ftxMapInfo" style="margin-top: 4px">Mapa: origem das estações pelo locator na mensagem (FT8, FT4, JS8). Amarelo: mais recentes.</div>
+      </div>
       <div class="ftx">
         <table>
           <thead><tr><th>UTC</th><th class="n">dB</th><th class="n">DT</th><th class="n">Hz</th><th>Mensagem</th></tr></thead>
@@ -926,6 +930,56 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     $('ftxInfo').textContent = info;
   }
 
+  // Station map: the land mask (480x234, 1 bit, from /api/worldmap) and a dot
+  // at the Maidenhead locator that ends each message.
+  const MAP_W = 480, MAP_H = 234, MAP_MAX = 150;
+  let mapLand = null, mapPts = [];
+
+  function gridOf(text) {
+    const t = text.trim().split(/\s+/), g = (t[t.length - 1] || '').toUpperCase();
+    if (g === 'RR73' || !/^[A-R]{2}[0-9]{2}([A-X]{2})?$/.test(g)) return null;
+    let lon = -180 + (g.charCodeAt(0) - 65) * 20 + (+g[2]) * 2, lat = -90 + (g.charCodeAt(1) - 65) * 10 + (+g[3]);
+    if (g.length === 6) { lon += (g.charCodeAt(4) - 65) / 12 + 1 / 24; lat += (g.charCodeAt(5) - 65) / 24 + 1 / 48; }
+    else { lon += 1; lat += 0.5; }
+    return [lat, lon];
+  }
+
+  function drawMap() {
+    const cv = $('ftxMap'), c = cv.getContext('2d'), w = cv.width, h = cv.height;
+    c.fillStyle = '#080e1e'; c.fillRect(0, 0, w, h);
+    if (mapLand) {
+      const sx = w / MAP_W, sy = h / MAP_H;
+      c.fillStyle = '#243854';
+      for (let y = 0; y < MAP_H; y++) {
+        let x = 0;
+        while (x < MAP_W) {
+          if (!(mapLand[y * 60 + (x >> 3)] & (0x80 >> (x & 7)))) { x++; continue; }
+          const x0 = x;
+          while (x < MAP_W && (mapLand[y * 60 + (x >> 3)] & (0x80 >> (x & 7)))) x++;
+          c.fillRect(x0 * sx, y * sy, (x - x0) * sx, sy + 0.5);
+        }
+      }
+    }
+    c.strokeStyle = '#16203a'; c.lineWidth = 1; c.beginPath();
+    for (let lon = -150; lon < 180; lon += 30) { const x = (lon + 180) / 360 * w; c.moveTo(x, 0); c.lineTo(x, h); }
+    for (let lat = -60; lat < 90; lat += 30) { const y = (90 - lat) / 180 * h; c.moveTo(0, y); c.lineTo(w, y); }
+    c.stroke();
+    mapPts.forEach((p, i) => {   // newest last: drawn on top
+      const age = mapPts.length - 1 - i;
+      c.fillStyle = age < 5 ? '#ffe63c' : age < 20 ? '#ff8c28' : '#c8503c';
+      c.beginPath(); c.arc((p[1] + 180) / 360 * w, (90 - p[0]) / 180 * h, age < 5 ? 6 : 4, 0, 6.3); c.fill();
+    });
+    $('ftxMapInfo').textContent = `Mapa: ${mapPts.length} estações (locator na mensagem). Amarelo: mais recentes.`;
+  }
+
+  async function loadMap() {
+    try {
+      const r = await fetch('/api/worldmap');
+      mapLand = new Uint8Array(await r.arrayBuffer());
+    } catch (e) {}
+    drawMap();
+  }
+
   function ftxRow(m) {
     const [slot, snr, dt, hz, text] = m;
     const tr = document.createElement('tr');
@@ -946,7 +1000,12 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
         const res = await fetch(`/api/ftx?s=${ftxSeq}`, { cache: 'no-store', signal: ctl.signal });
         const d = await res.json();
         const body = $('ftxRows');
-        for (const m of d.m) body.insertBefore(ftxRow(m), body.firstChild);
+        for (const m of d.m) {
+          body.insertBefore(ftxRow(m), body.firstChild);
+          const g = gridOf(m[4]);
+          if (g) { mapPts.push(g); if (mapPts.length > MAP_MAX) mapPts.shift(); }
+        }
+        if (d.m.length) drawMap();
         while (body.children.length > FTX_ROWS) body.lastChild.remove();
         ftxSeq = d.s;
       } catch (e) { again = 5000; }
@@ -956,7 +1015,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   }
 
   $('ftxMode').onchange = () => { ftxMode = +$('ftxMode').value; postConfig({ ftx_mode: $('ftxMode').value }); };
-  $('ftxClear').onclick = () => { $('ftxRows').innerHTML = ''; };
+  $('ftxClear').onclick = () => { $('ftxRows').innerHTML = ''; mapPts = []; drawMap(); };
+  loadMap();
 
   // SSTV gallery: the last images kept on the board, as thumbnails (click to
   // enlarge) with a PNG download each. Pixels are fetched once per image.
