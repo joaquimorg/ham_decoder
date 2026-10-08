@@ -53,7 +53,7 @@
 #define ES8311_CHANNEL      0       // slot read from the codec: 0 = left, 1 = right
 // Input gain: analog PGA 0..10 (3 dB steps) plus ADC scale 0..7 (6 dB steps).
 // Start low and raise it until the loudest signal stays below clipping.
-#define ES8311_MIC_PGA      0
+#define ES8311_MIC_PGA      2
 #define ES8311_ADC_SCALE    0
 
 // Monitor: the received audio (as the analyzer hears it) on the board's speaker,

@@ -126,6 +126,8 @@ LV_FONT_DECLARE(font_ui_16)
     X(S_SEC_AUDIO,      "Áudio", "Audio") \
     X(S_SEC_NETWORK,    "Rede e sistema", "Network and system") \
     X(S_SEC_STATUS,     "Estado", "Status") \
+    X(S_CFG_WF_OFFSET,  "Nível do espectro/waterfall", "Spectrum/waterfall level") \
+    X(S_CFG_WF_SPAN,    "Escala (dB)", "Scale (dB)") \
     X(S_CFG_BRIGHT,     "Brilho", "Brightness") \
     X(S_CFG_VOLUME,     "Volume do monitor", "Monitor volume") \
     X(S_CFG_WEB,        "Wi-Fi e página web", "Wi-Fi and web page") \
@@ -407,6 +409,7 @@ static int text_sel = 0;                // sub-tab shown
 static bool text_unread[TEXT_CH];       // new text in a sub-tab not shown
 static lv_obj_t *ftx_table, *lbl_ftx_state;
 static lv_obj_t *lbl_img_info;
+static lv_obj_t *lbl_wf_offset, *lbl_wf_span;
 static lv_obj_t *lbl_cfg_info, *lbl_contrast, *lbl_bright, *lbl_volume, *lbl_web_note;
 
 static uint16_t wf_lut[256];
@@ -471,7 +474,10 @@ static lv_obj_t *make_canvas(lv_obj_t *parent, uint16_t **buf, int w, int h)
 
 // Level byte: 0.5 dB steps from -120 dBFS. The colour scale follows the noise
 // floor (20th percentile of each row, smoothed) and spans WF_SPAN.
-#define WF_SPAN  100    // 50 dB
+// The user shifts it (wf_offset_db) and sets its span (wf_span_db) in the
+// settings.
+#define WF_SPAN  (g_settings.wf_span_db * 2)
+#define WF_LO(floor)  ((int)(floor) - 6 - g_settings.wf_offset_db * 2)
 static float wf_floor = -1.0f;
 
 static void draw_rows(const uint8_t (*rows)[UI_BINS], int n)
@@ -484,7 +490,7 @@ static void draw_rows(const uint8_t (*rows)[UI_BINS], int n)
         int q = 0;
         for (int acc = 0; q < 255 && (acc += hist[q]) < VIEW_BINS / 5; q++) {}
         wf_floor = wf_floor < 0.0f ? q : wf_floor + (q - wf_floor) * 0.05f;
-        const int lo = (int)wf_floor - 6;
+        const int lo = WF_LO(wf_floor);
 
         memmove(wf_buf + LCD_H_RES, wf_buf, LCD_H_RES * (WF_H - 1) * sizeof(uint16_t));
         for (int c = 0; c < LCD_H_RES; c++) {
@@ -497,7 +503,7 @@ static void draw_rows(const uint8_t (*rows)[UI_BINS], int n)
 
     // Spectrum of the newest row, with a 500 Hz grid and the decoder tones.
     const uint8_t *row = rows[n - 1];
-    const int lo = (int)wf_floor - 6;
+    const int lo = WF_LO(wf_floor);
     const uint16_t bg = rgb565(8, 12, 24), grid = rgb565(40, 48, 70), bar = rgb565(80, 200, 120);
     for (int i = 0; i < LCD_H_RES * SPEC_H; i++)
         spec_buf[i] = bg;
@@ -518,6 +524,29 @@ static void draw_rows(const uint8_t (*rows)[UI_BINS], int n)
             for (int y = 0; y < SPEC_H; y += 2)
                 spec_buf[y * LCD_H_RES + c] = color;
     };
+    // Input level: a bar at the right edge (peak, -60..0 dBFS). Green between
+    // -35 and -3 dBFS, amber too weak or too strong, red when clipping.
+    {
+        const float pk = last_status.peak_dbfs;
+        int h = (int)((pk + 60.0f) * SPEC_H / 60.0f);
+        h = h < 1 ? 1 : h > SPEC_H ? SPEC_H : h;
+        const bool good = pk >= -35.0f && pk <= -3.0f;
+        const uint16_t col = last_status.clip ? rgb565(255, 40, 40) : good ? rgb565(60, 230, 90) : rgb565(255, 190, 0);
+        const int y35 = SPEC_H - (int)((-35.0f + 60.0f) * SPEC_H / 60.0f);
+        const int y3 = SPEC_H - (int)((-3.0f + 60.0f) * SPEC_H / 60.0f);
+        for (int y = 0; y < SPEC_H; y++) {
+            // Track with the zones always visible: dim amber (too strong, too
+            // weak) and dim green (right); the level is the bright part.
+            const bool zone_ok = y >= y3 && y < y35;
+            const uint16_t track = zone_ok ? rgb565(20, 70, 30) : rgb565(80, 60, 10);
+            const bool lit = y >= SPEC_H - h;
+            for (int x = LCD_H_RES - 10; x < LCD_H_RES - 1; x++)
+                spec_buf[y * LCD_H_RES + x] = lit ? col : track;
+        }
+        // The current level as a white line, visible even when the bar is tiny.
+        for (int x = LCD_H_RES - 12; x < LCD_H_RES - 1; x++)
+            spec_buf[(SPEC_H - h) * LCD_H_RES + x] = rgb565(255, 255, 255);
+    }
     marker(last_status.tone_hz, rgb565(255, 60, 60));
     if (last_status.rtty_active) {
         marker(last_status.rtty_mark_hz, rgb565(255, 220, 0));
@@ -1077,7 +1106,7 @@ static void img_stop_event(lv_event_t *)
 enum CfgId {
     CFG_CW_AUTO, CFG_CONTRAST, CFG_RTTY_BAUD, CFG_RTTY_POL, CFG_FAX_LPM, CFG_FAX_IOC,
     CFG_FAX_AUTO, CFG_SSTV_ADJ, CFG_FTX_MODE, CFG_BRIGHT, CFG_WEB, CFG_LANGUAGE, CFG_VOLUME, CFG_SKIM,
-    CFG_QRSS_HZ, CFG_MFSK_MODE, CFG_MFSK_TONES, CFG_MFSK_BW, CFG_MFSK_HZ,
+    CFG_WF_OFFSET, CFG_WF_SPAN, CFG_QRSS_HZ, CFG_MFSK_MODE, CFG_MFSK_TONES, CFG_MFSK_BW, CFG_MFSK_HZ,
 };
 
 static void rebuild_ui(void *);
@@ -1142,6 +1171,16 @@ static void cfg_event(lv_event_t *e)
     }
     case CFG_MFSK_HZ:   g_settings.mfsk_hz = MFSK_HZS[lv_dropdown_get_selected(obj)]; break;
     case CFG_FTX_MODE:  g_settings.ftx_mode = lv_dropdown_get_selected(obj); break;
+    case CFG_WF_OFFSET:
+        g_settings.wf_offset_db = lv_slider_get_value(obj);
+        lv_label_set_text_fmt(lbl_wf_offset, "%+d dB", g_settings.wf_offset_db);
+        save = code == LV_EVENT_RELEASED;
+        break;
+    case CFG_WF_SPAN:
+        g_settings.wf_span_db = lv_slider_get_value(obj);
+        lv_label_set_text_fmt(lbl_wf_span, "%d dB", g_settings.wf_span_db);
+        save = code == LV_EVENT_RELEASED;
+        break;
     case CFG_BRIGHT:
         g_settings.lcd_brightness = lv_slider_get_value(obj);
         lv_label_set_text_fmt(lbl_bright, "%d %%", g_settings.lcd_brightness);
@@ -1235,6 +1274,14 @@ static lv_obj_t *cfg_slider(lv_obj_t *parent, const char *text, int min, int max
     lv_slider_set_range(sl, min, max);
     lv_slider_set_value(sl, val, LV_ANIM_OFF);
     lv_obj_set_width(sl, 180);
+    // Tall rows and a big knob: sliders one above the other must be easy to
+    // hit with a finger.
+    // The slider itself is thicker (the knob follows its height) instead of
+    // padding the knob, which a row would clip.
+    lv_obj_set_style_min_height(row, 58, 0);
+    lv_obj_set_style_pad_ver(row, 12, 0);
+    lv_obj_set_height(sl, 18);
+    lv_obj_set_ext_click_area(sl, 14);
     lv_obj_add_event_cb(sl, cfg_event, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)id);
     lv_obj_add_event_cb(sl, cfg_event, LV_EVENT_RELEASED, (void *)(intptr_t)id);
     *value_lbl = lv_label_create(row);
@@ -1467,6 +1514,10 @@ static void build_settings(lv_obj_t *tab)
     cfg_section(tab, tr(S_SEC_GENERAL), true);
     cfg_dropdown(tab, LV_SYMBOL_LIST "  Idioma / Language", "Português\nEnglish",
                  g_settings.language == LANG_EN ? 1 : 0, CFG_LANGUAGE);
+    cfg_slider(tab, tr(S_CFG_WF_OFFSET), -30, 30, g_settings.wf_offset_db, CFG_WF_OFFSET, &lbl_wf_offset);
+    lv_label_set_text_fmt(lbl_wf_offset, "%+d dB", g_settings.wf_offset_db);
+    cfg_slider(tab, tr(S_CFG_WF_SPAN), 20, 80, g_settings.wf_span_db, CFG_WF_SPAN, &lbl_wf_span);
+    lv_label_set_text_fmt(lbl_wf_span, "%d dB", g_settings.wf_span_db);
     cfg_slider(tab, tr(S_CFG_BRIGHT), 5, 100, g_settings.lcd_brightness, CFG_BRIGHT, &lbl_bright);
     lv_label_set_text_fmt(lbl_bright, "%d %%", g_settings.lcd_brightness);
 #if AUDIO_MONITOR

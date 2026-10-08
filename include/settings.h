@@ -35,6 +35,8 @@ struct Settings {
     int decoder;                // DecoderSel
     int dec_hz;                 // audio frequency of the manual decoder
     bool web_enabled;           // Wi-Fi + web page (WEB_UI builds only)
+    int wf_offset_db;           // LCD spectrum/waterfall: shifts the floor, -30..+30 dB (+ = brighter)
+    int wf_span_db;             // LCD spectrum/waterfall: dB from black to white, 20..80
     int lcd_brightness;         // backlight, 5..100 %
     int monitor_volume;         // speaker monitor, 0..100 % (AUDIO_MONITOR builds)
     int language;               // Language

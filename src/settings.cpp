@@ -54,6 +54,8 @@ static void set_defaults()
     g_settings.decoder = DEC_AUTO;
     g_settings.dec_hz = 1500;
     g_settings.web_enabled = true;
+    g_settings.wf_offset_db = 0;
+    g_settings.wf_span_db = 50;
     g_settings.lcd_brightness = 80;
     g_settings.monitor_volume = MONITOR_DEFAULT_VOL;
     g_settings.language = LANG_PT;
@@ -117,6 +119,11 @@ void settings_init()
         g_settings.dec_hz = u32;
     if (nvs_get_u8(h, "web_on", &u8) == ESP_OK)
         g_settings.web_enabled = u8 != 0;
+    int8_t i8;
+    if (nvs_get_i8(h, "wf_off", &i8) == ESP_OK && i8 >= -30 && i8 <= 30)
+        g_settings.wf_offset_db = i8;
+    if (nvs_get_u8(h, "wf_span", &u8) == ESP_OK && u8 >= 20 && u8 <= 80)
+        g_settings.wf_span_db = u8;
     if (nvs_get_u8(h, "lcd_bl", &u8) == ESP_OK && u8 >= 5 && u8 <= 100)
         g_settings.lcd_brightness = u8;
     if (nvs_get_u8(h, "mon_vol", &u8) == ESP_OK && u8 <= 100)
@@ -176,6 +183,8 @@ void settings_save()
     nvs_set_u8(h, "dec_sel", (uint8_t)g_settings.decoder);
     nvs_set_u32(h, "dec_hz", (uint32_t)g_settings.dec_hz);
     nvs_set_u8(h, "web_on", g_settings.web_enabled ? 1 : 0);
+    nvs_set_i8(h, "wf_off", (int8_t)g_settings.wf_offset_db);
+    nvs_set_u8(h, "wf_span", (uint8_t)g_settings.wf_span_db);
     nvs_set_u8(h, "lcd_bl", (uint8_t)g_settings.lcd_brightness);
     nvs_set_u8(h, "mon_vol", (uint8_t)g_settings.monitor_volume);
     nvs_set_u8(h, "lang", (uint8_t)g_settings.language);

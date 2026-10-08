@@ -36,6 +36,8 @@ main { max-width: 1200px; margin: 0 auto; padding: 16px; display: grid; gap: 16p
 .metric .v { font: 600 20px/1.3 var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .metric.label .v { font-size: 22px; color: var(--accent); }
 .metric .v.clip { color: var(--bad); }
+.metric .v .sub { display: block; font-size: 11px; font-weight: normal; white-space: normal; line-height: 1.2; }
+.metric .v.lvl-ok { color: var(--accent); } .metric .v.lvl-warn { color: var(--manual); }
 .scope { position: relative; }
 canvas { display: block; width: 100%; background: #000; border-radius: 6px; }
 #wf { height: 300px; cursor: crosshair; image-rendering: auto; }
@@ -673,8 +675,12 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     $('ml').textContent = d.ml ? d.ml + ' ' + Math.round(d.ml_p * 100) + '%' : '-';
     $('snr').textContent = d.snr.toFixed(0) + ' dB';
     $('rms').textContent = d.rms.toFixed(0) + ' dBFS';
-    $('pk').textContent = d.pk.toFixed(0) + ' dBFS';
-    $('pk').classList.toggle('clip', d.clip);
+    // Input level: peak between -35 and -3 dBFS is right; below it the ADC
+    // resolution is wasted, above it the signal is about to clip.
+    const lvl = d.clip ? ['CLIP: baixar o nível', 'clip'] : d.pk < -35 ? ['fraco: subir o nível', 'lvl-warn']
+              : d.pk > -3 ? ['alto: baixar o nível', 'lvl-warn'] : ['nível bom', 'lvl-ok'];
+    $('pk').innerHTML = d.pk.toFixed(0) + ' dBFS<span class="sub">' + lvl[0] + '</span>';
+    $('pk').className = 'v ' + lvl[1];
     tone = d.tone;
     $('tone').textContent = d.tone ? d.tone.toFixed(0) + ' Hz' : '-';
     $('wpm').textContent = d.tone ? d.wpm.toFixed(0) + ' wpm' : '-';
