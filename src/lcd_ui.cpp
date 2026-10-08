@@ -1684,7 +1684,7 @@ static void dec_open_event(lv_event_t *)
     lv_obj_center(cl);
     lv_obj_add_event_cb(cb, dec_close_event, LV_EVENT_CLICKED, nullptr);
 
-    constexpr int COLS = 4, BW = 112, BH = 54, GAP = 8, X0 = 8, Y0 = 46;
+    constexpr int COLS = 4, BW = 112, BH = 46, GAP = 6, X0 = 8, Y0 = 44;
     for (int d = 0; d < DEC_COUNT; d++) {
         lv_obj_t *b = lv_button_create(dec_panel);
         lv_obj_set_size(b, BW, BH);
