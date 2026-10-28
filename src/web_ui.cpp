@@ -552,6 +552,7 @@ static esp_err_t handle_ftx(httpd_req_t *req)
 }
 
 // GET /api/worldmap -> the land mask (include/world_map.h) for the station map
+static_assert(WORLD_MAP_W == 1440 && WORLD_MAP_H == 720, "web_page.inc MAP_W/MAP_H must match world_map.h");
 static esp_err_t handle_worldmap(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/octet-stream");

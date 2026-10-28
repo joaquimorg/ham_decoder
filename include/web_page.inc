@@ -395,6 +395,10 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
       <div class="note" style="margin-bottom: 8px">JS8 (JS8Call): uma linha por quadro, como o JS8Call os mostra (heartbeats, CQ, comandos dirigidos, texto). Uma mensagem longa vem em vários quadros seguidos. As velocidades Normal (15 s), Fast (10 s), Turbo (6 s) e Slow (30 s) não se descodificam ao mesmo tempo: escolhe a que está em uso. Como o FT8, precisa da hora UTC certa.</div>
       <div class="mapbox" style="position: relative; margin-bottom: 10px">
         <canvas id="ftxMap" width="960" height="468" style="width: 100%; height: auto; display: block; border-radius: 6px; background: #080e1e"></canvas>
+        <div style="position: absolute; top: 6px; right: 6px; display: flex; flex-direction: column; gap: 4px">
+          <button id="mapIn" type="button" style="width: 32px; height: 32px; padding: 0; opacity: .85">+</button>
+          <button id="mapOut" type="button" style="width: 32px; height: 32px; padding: 0; opacity: .85">&minus;</button>
+        </div>
         <div class="note" id="ftxMapInfo" style="margin-top: 4px">Mapa: origem das estações pelo locator na mensagem (FT8, FT4, JS8). Amarelo: mais recentes.</div>
       </div>
       <div class="ftx">
@@ -930,9 +934,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     $('ftxInfo').textContent = info;
   }
 
-  // Station map: the land mask (480x234, 1 bit, from /api/worldmap) and a dot
+  // Station map: the land mask (1440x720, 1 bit, from /api/worldmap) and a dot
   // at the Maidenhead locator that ends each message.
-  const MAP_W = 480, MAP_H = 234, MAP_MAX = 150;
+  const MAP_W = 1440, MAP_H = 720, MAP_RB = 180, MAP_MAX = 150;   // mask size: include/world_map.h
   let mapLand = null, mapPts = [];
 
   function gridOf(text) {
@@ -944,33 +948,82 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     return [lat, lon];
   }
 
+  // View: zoom (1 = whole world) and the lon/lat at the centre.
+  let mapZ = 1, mapCx = 0, mapCy = 0;
+
+  function mapClamp() {
+    const hw = 180 / mapZ, hh = 90 / mapZ;
+    mapCx = Math.min(Math.max(mapCx, -180 + hw), 180 - hw);
+    mapCy = Math.min(Math.max(mapCy, -90 + hh), 90 - hh);
+  }
+
   function drawMap() {
     const cv = $('ftxMap'), c = cv.getContext('2d'), w = cv.width, h = cv.height;
+    mapClamp();
+    const kx = w / 360 * mapZ, ky = h / 180 * mapZ;           // pixels per degree
+    const x0 = mapCx - 180 / mapZ, y0 = mapCy + 90 / mapZ;    // lon / lat at the top left
+    const px = lon => (lon - x0) * kx, py = lat => (y0 - lat) * ky;
     c.fillStyle = '#080e1e'; c.fillRect(0, 0, w, h);
     if (mapLand) {
-      const sx = w / MAP_W, sy = h / MAP_H;
+      const sx = MAP_W / 360, sy = MAP_H / 180;               // mask cells per degree
       c.fillStyle = '#243854';
       for (let y = 0; y < MAP_H; y++) {
+        const ya = py(90 - y / sy), yb = py(90 - (y + 1) / sy);
+        if (yb < 0 || ya > h) continue;
         let x = 0;
         while (x < MAP_W) {
-          if (!(mapLand[y * 60 + (x >> 3)] & (0x80 >> (x & 7)))) { x++; continue; }
-          const x0 = x;
-          while (x < MAP_W && (mapLand[y * 60 + (x >> 3)] & (0x80 >> (x & 7)))) x++;
-          c.fillRect(x0 * sx, y * sy, (x - x0) * sx, sy + 0.5);
+          if (!(mapLand[y * MAP_RB + (x >> 3)] & (0x80 >> (x & 7)))) { x++; continue; }
+          const xs = x;
+          while (x < MAP_W && (mapLand[y * MAP_RB + (x >> 3)] & (0x80 >> (x & 7)))) x++;
+          const xa = px(xs / sx - 180), xb = px(x / sx - 180);
+          if (xb >= 0 && xa <= w) c.fillRect(xa, ya, xb - xa + 0.5, yb - ya + 0.5);
         }
       }
     }
+    const gs = mapZ >= 4 ? 10 : 30;
     c.strokeStyle = '#16203a'; c.lineWidth = 1; c.beginPath();
-    for (let lon = -150; lon < 180; lon += 30) { const x = (lon + 180) / 360 * w; c.moveTo(x, 0); c.lineTo(x, h); }
-    for (let lat = -60; lat < 90; lat += 30) { const y = (90 - lat) / 180 * h; c.moveTo(0, y); c.lineTo(w, y); }
+    for (let lon = -180 + gs; lon < 180; lon += gs) { const x = px(lon); c.moveTo(x, 0); c.lineTo(x, h); }
+    for (let lat = -90 + gs; lat < 90; lat += gs) { const y = py(lat); c.moveTo(0, y); c.lineTo(w, y); }
     c.stroke();
     mapPts.forEach((p, i) => {   // newest last: drawn on top
       const age = mapPts.length - 1 - i;
       c.fillStyle = age < 5 ? '#ffe63c' : age < 20 ? '#ff8c28' : '#c8503c';
-      c.beginPath(); c.arc((p[1] + 180) / 360 * w, (90 - p[0]) / 180 * h, age < 5 ? 6 : 4, 0, 6.3); c.fill();
+      c.beginPath(); c.arc(px(p[1]), py(p[0]), age < 5 ? 6 : 4, 0, 6.3); c.fill();
     });
     $('ftxMapInfo').textContent = `Mapa: ${mapPts.length} estações (locator na mensagem). Amarelo: mais recentes.`;
   }
+
+  // Zoom: wheel (around the pointer), buttons and double click; drag to pan.
+  function mapZoom(f, fx, fy) {    // fx, fy: pointer as a fraction of the canvas
+    const nz = Math.min(Math.max(mapZ * f, 1), 16);
+    if (nz === mapZ) return;
+    const lon = mapCx + (fx - 0.5) * 360 / mapZ, lat = mapCy - (fy - 0.5) * 180 / mapZ;
+    mapZ = nz;
+    mapCx = lon - (fx - 0.5) * 360 / mapZ; mapCy = lat + (fy - 0.5) * 180 / mapZ;
+    if (mapZ === 1) mapCx = mapCy = 0;
+    drawMap();
+  }
+  (() => {
+    const cv = $('ftxMap');
+    const frac = e => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]; };
+    cv.style.touchAction = 'none'; cv.style.cursor = 'grab';
+    cv.addEventListener('wheel', e => { e.preventDefault(); mapZoom(e.deltaY < 0 ? 1.4 : 1 / 1.4, ...frac(e)); }, { passive: false });
+    cv.addEventListener('dblclick', e => mapZoom(2, ...frac(e)));
+    let drag = null;
+    cv.addEventListener('pointerdown', e => { drag = [e.clientX, e.clientY]; cv.setPointerCapture(e.pointerId); });
+    cv.addEventListener('pointermove', e => {
+      if (!drag) return;
+      const r = cv.getBoundingClientRect();
+      mapCx -= (e.clientX - drag[0]) / r.width * 360 / mapZ;
+      mapCy += (e.clientY - drag[1]) / r.height * 180 / mapZ;
+      drag = [e.clientX, e.clientY];
+      drawMap();
+    });
+    const end = () => { drag = null; };
+    cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
+    $('mapIn').onclick = () => mapZoom(2, 0.5, 0.5);
+    $('mapOut').onclick = () => mapZoom(0.5, 0.5, 0.5);
+  })();
 
   async function loadMap() {
     try {

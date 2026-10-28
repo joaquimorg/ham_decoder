@@ -2,13 +2,13 @@
 # include/world_map.h (1 bit per pixel, MSB first, rows top to bottom,
 # equirectangular: x = (lon + 180) / 360 * W, y = (90 - lat) / 180 * H).
 #   python tools/map/gen_world.py
-# Data: Natural Earth 110m land (public domain), downloaded when run.
+# Data: Natural Earth 50m land (public domain), downloaded when run.
 import json, os, urllib.request
 import numpy as np
 from PIL import Image, ImageDraw
 
-W, H, SS = 480, 234, 4
-URL = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_land.geojson"
+W, H, SS = 1440, 720, 3
+URL = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_land.geojson"
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 geo = json.load(urllib.request.urlopen(URL))
@@ -29,7 +29,7 @@ for f in geo["features"]:
             d.polygon(pts(hole), fill=0)
 
 small = np.asarray(img.resize((W, H), Image.BOX), np.float32) / 255
-bits = small >= 0.3
+bits = small >= 0.4
 packed = np.packbits(bits, axis=1)
 out = os.path.join(ROOT, "include", "world_map.h")
 with open(out, "w", encoding="utf-8") as fh:

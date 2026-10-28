@@ -413,6 +413,9 @@ static bool text_unread[TEXT_CH];       // new text in a sub-tab not shown
 static lv_obj_t *ftx_table, *lbl_ftx_state, *ftx_map, *ftx_map_btn_lbl;
 static uint16_t *ftx_map_buf;
 static bool ftx_map_view = false;       // the station map instead of the table
+static lv_obj_t *ftx_zoom_in, *ftx_zoom_out;
+static int ftx_zoom = 1;                // 1, 2, 4, 8
+static float ftx_clon = 0.0f, ftx_clat = 0.0f;    // centre of the zoomed map
 static lv_obj_t *lbl_img_info;
 static lv_obj_t *lbl_wf_offset, *lbl_wf_span;
 static lv_obj_t *lbl_cfg_info, *lbl_contrast, *lbl_bright, *lbl_volume, *lbl_web_note;
@@ -963,27 +966,43 @@ static void ftx_map_draw()
     if (!ftx_map_buf)
         return;
     const uint16_t sea = rgb565(8, 14, 30), land = rgb565(36, 56, 84), grid = rgb565(22, 32, 52);
+    // Equirectangular view: pixels per degree, and the clamped centre.
+    const float sx = LCD_H_RES / 360.0f * ftx_zoom, sy = FTX_MAP_H / 180.0f * ftx_zoom;
+    const float hw = 180.0f / ftx_zoom, hh = 90.0f / ftx_zoom;
+    ftx_clon = fminf(fmaxf(ftx_clon, -180.0f + hw), 180.0f - hw);
+    ftx_clat = fminf(fmaxf(ftx_clat, -90.0f + hh), 90.0f - hh);
+    const float x_left = ftx_clon - hw, y_top = ftx_clat + hh;    // lon / lat at pixel 0
+    static int16_t col_mx[LCD_H_RES];
+    for (int x = 0; x < LCD_H_RES; x++)
+        col_mx[x] = (int16_t)fminf((x_left + x / sx + 180.0f) * WORLD_MAP_W / 360.0f, WORLD_MAP_W - 1);
     for (int y = 0; y < FTX_MAP_H; y++) {
-        const int my = y * WORLD_MAP_H / FTX_MAP_H;
+        const int my = (int)fminf((90.0f - (y_top - y / sy)) * WORLD_MAP_H / 180.0f, WORLD_MAP_H - 1);
+        const uint8_t *row = WORLD_MAP + my * WORLD_MAP_ROW_BYTES;
         for (int x = 0; x < LCD_H_RES; x++) {
-            const int mx = x * WORLD_MAP_W / LCD_H_RES;
-            const bool is_land = WORLD_MAP[my * WORLD_MAP_ROW_BYTES + (mx >> 3)] & (0x80 >> (mx & 7));
-            ftx_map_buf[y * LCD_H_RES + x] = is_land ? land : sea;
+            const int mx = col_mx[x];
+            ftx_map_buf[y * LCD_H_RES + x] = (row[mx >> 3] & (0x80 >> (mx & 7))) ? land : sea;
         }
     }
-    for (int lon = -150; lon < 180; lon += 30)
-        for (int y = 0; y < FTX_MAP_H; y += 2)
-            ftx_map_buf[y * LCD_H_RES + (lon + 180) * LCD_H_RES / 360] = grid;
-    for (int lat = -60; lat < 90; lat += 30)
-        for (int x = 0; x < LCD_H_RES; x += 2)
-            ftx_map_buf[((90 - lat) * FTX_MAP_H / 180) * LCD_H_RES + x] = grid;
+    const int gstep = ftx_zoom >= 4 ? 10 : 30;
+    for (int lon = -180 + gstep; lon < 180; lon += gstep) {
+        const int x = (int)((lon - x_left) * sx);
+        if (x >= 0 && x < LCD_H_RES)
+            for (int y = 0; y < FTX_MAP_H; y += 2)
+                ftx_map_buf[y * LCD_H_RES + x] = grid;
+    }
+    for (int lat = -90 + gstep; lat < 90; lat += gstep) {
+        const int y = (int)((y_top - lat) * sy);
+        if (y >= 0 && y < FTX_MAP_H)
+            for (int x = 0; x < LCD_H_RES; x += 2)
+                ftx_map_buf[y * LCD_H_RES + x] = grid;
+    }
     int stations = 0;
     for (int i = ftx_count - 1; i >= 0; i--) {    // oldest first: the newest end up on top
         float la, lo;
         if (!maidenhead_from_text(ftx_list[i].text, &la, &lo))
             continue;
         stations++;
-        const int cx = (int)((lo + 180.0f) * LCD_H_RES / 360.0f), cy = (int)((90.0f - la) * FTX_MAP_H / 180.0f);
+        const int cx = (int)((lo - x_left) * sx), cy = (int)((y_top - la) * sy);
         const int age = i < 5 ? 0 : i < 20 ? 1 : 2;
         const uint16_t col = age == 0 ? rgb565(255, 230, 60) : age == 1 ? rgb565(255, 140, 40) : rgb565(200, 80, 60);
         const int r = age == 0 ? 3 : 2;
@@ -1003,12 +1022,51 @@ static void ftx_show_view()
     if (ftx_map_view) {
         lv_obj_add_flag(ftx_table, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(ftx_map, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(ftx_zoom_in, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(ftx_zoom_out, LV_OBJ_FLAG_HIDDEN);
         ftx_map_draw();
     } else {
         lv_obj_remove_flag(ftx_table, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(ftx_map, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ftx_zoom_in, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ftx_zoom_out, LV_OBJ_FLAG_HIDDEN);
     }
     lv_label_set_text(ftx_map_btn_lbl, ftx_map_view ? LV_SYMBOL_LIST : LV_SYMBOL_GPS);
+}
+
+// Zoom buttons: x2 / /2 around the current centre (back to the whole world at 1).
+static void ftx_zoom_event(lv_event_t *e)
+{
+    const bool in = lv_event_get_user_data(e) != nullptr;
+    const int z = in ? ftx_zoom * 2 : ftx_zoom / 2;
+    if (z < 1 || z > 8)
+        return;
+    ftx_zoom = z;
+    if (z == 1)
+        ftx_clon = ftx_clat = 0.0f;
+    ftx_map_draw();
+}
+
+// Drag to pan the zoomed map.
+static void ftx_map_drag_event(lv_event_t *)
+{
+    static int64_t drawn_us;
+    if (ftx_zoom == 1)
+        return;
+    lv_indev_t *indev = lv_indev_active();
+    if (!indev)
+        return;
+    lv_point_t v;
+    lv_indev_get_vect(indev, &v);
+    if (!v.x && !v.y)
+        return;
+    ftx_clon -= v.x * 360.0f / (LCD_H_RES * ftx_zoom);
+    ftx_clat += v.y * 180.0f / (FTX_MAP_H * ftx_zoom);
+    const int64_t now = esp_timer_get_time();
+    if (now - drawn_us < 60000)
+        return;
+    drawn_us = now;
+    ftx_map_draw();
 }
 
 static void ftx_map_btn_event(lv_event_t *)
@@ -2125,6 +2183,19 @@ static void build_ui()
 
     ftx_map = make_canvas(tab_ftx, &ftx_map_buf, LCD_H_RES, FTX_MAP_H);
     lv_obj_set_pos(ftx_map, 0, FTX_BAR_H);
+    lv_obj_set_clickable(ftx_map, true);
+    lv_obj_add_event_cb(ftx_map, ftx_map_drag_event, LV_EVENT_PRESSING, nullptr);
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t *zb = lv_button_create(tab_ftx);
+        lv_obj_set_size(zb, 38, 34);
+        lv_obj_set_pos(zb, LCD_H_RES - 44, FTX_BAR_H + 6 + i * 40);
+        lv_obj_set_style_bg_opa(zb, LV_OPA_80, 0);
+        lv_obj_t *zl = lv_label_create(zb);
+        lv_label_set_text(zl, i ? LV_SYMBOL_MINUS : LV_SYMBOL_PLUS);
+        lv_obj_center(zl);
+        lv_obj_add_event_cb(zb, ftx_zoom_event, LV_EVENT_CLICKED, (void *)(intptr_t)(i == 0));
+        (i ? ftx_zoom_out : ftx_zoom_in) = zb;
+    }
     ftx_show_view();
 
     // Image: the picture (tap: whole image / fit width; 1:1 button: real size, drag
